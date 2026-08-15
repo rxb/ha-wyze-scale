@@ -10,6 +10,12 @@ Usage:
   # history, then listen for live weight until idle:
   python3 scale_tool.py sync [--adapter hci2] [--address MAC] [--no-drain]
 
+  # Create a user profile on the scale (prints the generated user id):
+  python3 scale_tool.py add-user --sex m --age 40 --height 180 --weight 80
+
+  # Delete a user profile:
+  python3 scale_tool.py del-user --user-id <32 hex chars>
+
 Run inside a venv with: pip install bleak bleak-retry-connector
 """
 
@@ -33,6 +39,7 @@ from wyze_ble import (  # noqa: E402
     LOCAL_NAME,
     SERVICE_UUID,
     Measurement,
+    UserRecord,
     WyzeScaleClient,
 )
 
@@ -119,8 +126,11 @@ def _print_measurement(m: Measurement, kind: str) -> None:
     )
 
 
-async def cmd_sync(args: argparse.Namespace) -> None:
-    """Full protocol session against a live scale."""
+async def _connect_session(
+    args: argparse.Namespace,
+    on_live=None,
+) -> WyzeScaleClient:
+    """Find the scale, connect, handshake, and sync its clock."""
     print(f"Looking for scale on {args.adapter} (waiting up to {args.wait}s)...")
     if args.address:
         device = await BleakScanner.find_device_by_address(
@@ -134,34 +144,39 @@ async def cmd_sync(args: argparse.Namespace) -> None:
         print("Scale not found. Step on it to wake it, then re-run.")
         sys.exit(1)
     print(f"Found {device.name} @ {device.address}; connecting...")
+    client = WyzeScaleClient(on_live_weight=on_live)
+    await client.connect(device)
+    print("Connected; handshake OK")
+    # Scale clock = local wall time as epoch seconds
+    local_epoch = int(datetime.now().replace(tzinfo=timezone.utc).timestamp())
+    await client.sync_time(local_epoch)
+    print("SYNC_TIME ok")
+    return client
 
+
+def _print_users(users: list[UserRecord]) -> None:
+    print(f"USER_LIST_NEW: {len(users)} user(s)")
+    for u in users:
+        print(
+            f"  user={u.user_id_hex} sex={u.sex} age={u.age} "
+            f"height={u.height}cm athlete={u.athlete_mode} "
+            f"only_weight={u.only_weight} last_weight={u.weight_raw / 100:.2f}kg "
+            f"last_impedance={u.last_impedance}"
+        )
+
+
+async def cmd_sync(args: argparse.Namespace) -> None:
+    """Full protocol session against a live scale."""
     last_live = [0.0]
 
     def on_live(m: Measurement) -> None:
         last_live[0] = time.monotonic()
         _print_measurement(m, "LIVE")
 
-    client = WyzeScaleClient(on_live_weight=on_live)
+    client = await _connect_session(args, on_live=on_live)
     try:
-        await client.connect(device)
-        print("Connected; handshake OK")
-
-        # Scale clock = local wall time as epoch seconds
-        local_epoch = int(
-            datetime.now().replace(tzinfo=timezone.utc).timestamp()
-        )
-        await client.sync_time(local_epoch)
-        print("SYNC_TIME ok")
-
         users = await client.get_users()
-        print(f"USER_LIST_NEW: {len(users)} user(s)")
-        for u in users:
-            print(
-                f"  user={u.user_id_hex} sex={u.sex} age={u.age} "
-                f"height={u.height}cm athlete={u.athlete_mode} "
-                f"only_weight={u.only_weight} last_weight={u.weight_raw / 100:.2f}kg "
-                f"last_impedance={u.last_impedance}"
-            )
+        _print_users(users)
 
         if not args.no_drain:
             for u in users:
@@ -184,6 +199,57 @@ async def cmd_sync(args: argparse.Namespace) -> None:
         print("Disconnected")
 
 
+async def cmd_add_user(args: argparse.Namespace) -> None:
+    """Create a new user profile on the scale (PROTOCOL.md §5.9)."""
+    import secrets
+
+    record = UserRecord(
+        user_id=secrets.token_bytes(16),
+        weight_raw=round(args.weight * 100),
+        sex=1 if args.sex == "m" else 0,
+        age=args.age,
+        height=args.height,
+        athlete_mode=1 if args.athlete else 0,
+        only_weight=1 if args.weight_only else 0,
+        last_impedance=0,
+    )
+    client = await _connect_session(args)
+    try:
+        await client.select_user(record)
+        print("CURRENT_USER_NEW ok")
+        await client.update_user(record)
+        print("UPDATE_USER ok")
+        print(f"Created user: {record.user_id_hex}")
+        _print_users(await client.get_users())
+    finally:
+        await client.disconnect()
+        print("Disconnected")
+
+
+async def cmd_del_user(args: argparse.Namespace) -> None:
+    """Delete a user profile from the scale."""
+    user_id = bytes.fromhex(args.user_id)
+    if len(user_id) != 16:
+        print("user-id must be 32 hex characters (16 bytes)")
+        sys.exit(1)
+    client = await _connect_session(args)
+    try:
+        await client.delete_user(user_id)
+        print(f"Deleted user: {args.user_id}")
+        _print_users(await client.get_users())
+    finally:
+        await client.disconnect()
+        print("Disconnected")
+
+
+def _add_connect_args(sub_parser: argparse.ArgumentParser) -> None:
+    sub_parser.add_argument("--adapter", default="hci2")
+    sub_parser.add_argument(
+        "--address", help="scale MAC (otherwise discover by name/UUID)"
+    )
+    sub_parser.add_argument("--wait", type=int, default=60, help="discovery timeout")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -194,9 +260,7 @@ def main() -> None:
     scan.add_argument("--passive", action="store_true", help="passive scanning mode")
 
     sync = sub.add_parser("sync", help="connect and run a full session")
-    sync.add_argument("--adapter", default="hci2")
-    sync.add_argument("--address", help="scale MAC (otherwise discover by name/UUID)")
-    sync.add_argument("--wait", type=int, default=60, help="discovery timeout")
+    _add_connect_args(sync)
     sync.add_argument("--listen", type=int, default=60, help="live-weight listen time")
     sync.add_argument(
         "--no-drain",
@@ -204,11 +268,34 @@ def main() -> None:
         help="skip history drain (acknowledging deletes records from the scale)",
     )
 
+    add_user = sub.add_parser("add-user", help="create a user profile on the scale")
+    _add_connect_args(add_user)
+    add_user.add_argument("--sex", choices=["m", "f"], required=True)
+    add_user.add_argument("--age", type=int, required=True, help="years")
+    add_user.add_argument("--height", type=int, required=True, help="centimeters")
+    add_user.add_argument(
+        "--weight",
+        type=float,
+        required=True,
+        help="approximate weight in kg (used by the scale to match weigh-ins)",
+    )
+    add_user.add_argument("--athlete", action="store_true", help="athlete mode")
+    add_user.add_argument(
+        "--weight-only", action="store_true", help="skip body composition"
+    )
+
+    del_user = sub.add_parser("del-user", help="delete a user profile from the scale")
+    _add_connect_args(del_user)
+    del_user.add_argument("--user-id", required=True, help="32 hex characters")
+
     args = parser.parse_args()
-    if args.command == "scan":
-        asyncio.run(cmd_scan(args))
-    else:
-        asyncio.run(cmd_sync(args))
+    handler = {
+        "scan": cmd_scan,
+        "sync": cmd_sync,
+        "add-user": cmd_add_user,
+        "del-user": cmd_del_user,
+    }[args.command]
+    asyncio.run(handler(args))
 
 
 if __name__ == "__main__":

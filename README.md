@@ -47,9 +47,23 @@ wake-up can be detected), a periodic fallback sync (default every 6 h,
     `Impedance` (diagnostic)
 
 Sub-devices exist so each person can rename their device and link it to
-their Home Assistant person. User profiles (created via the Wyze app) are
-identified by an opaque 16-byte ID; the first measurement will tell you
-whose is whose.
+their Home Assistant person. Users are identified by an opaque 16-byte ID
+(shown as the `user_id` attribute on the Weight sensor); the first
+measurement will tell you whose is whose.
+
+### Managing users
+
+Profiles can come from the Wyze app, or be managed directly from HA — the
+scale must be awake (advertising) for either service:
+
+- **`wyze_scale.add_user`** — creates a profile (sex, age, height and an
+  *approximate* weight, which the scale uses to match weigh-ins to users;
+  optional athlete/weight-only modes). Returns the generated `user_id`;
+  the new sub-device appears immediately.
+- **`wyze_scale.delete_user`** — deletes a profile from the scale and
+  removes its sub-device. Takes the 32-hex-character `user_id`.
+
+`address` is only needed if more than one scale is configured.
 
 Body-composition sensors are `None` for weight-only profiles or when
 impedance could not be measured.
@@ -99,6 +113,10 @@ python3 -m venv .venv && .venv/bin/pip install bleak bleak-retry-connector
 .venv/bin/python scripts/scale_tool.py scan --adapter hci2 --duration 120
 # Full session: handshake, time sync, user list, history drain, live weight:
 .venv/bin/python scripts/scale_tool.py sync --adapter hci2
+# Manage user profiles:
+.venv/bin/python scripts/scale_tool.py add-user --adapter hci2 \
+    --sex m --age 40 --height 180 --weight 80
+.venv/bin/python scripts/scale_tool.py del-user --adapter hci2 --user-id <hex>
 ```
 
 `sync` drains (and therefore deletes) pending history records — use

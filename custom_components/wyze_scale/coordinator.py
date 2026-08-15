@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from typing import Any
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -395,6 +398,105 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                 _LOGGER.debug("Live-data linger hit max wait; disconnecting")
                 return
             await asyncio.sleep(1)
+
+    # ------------------------------------------------------------------
+    # User management (add_user / delete_user services)
+    # ------------------------------------------------------------------
+
+    async def _async_connect_for_command(self) -> WyzeScaleClient:
+        """Open a short command session; caller must disconnect."""
+        ble_device = bluetooth.async_ble_device_from_address(
+            self.hass, self._address, connectable=True
+        )
+        if ble_device is None:
+            raise HomeAssistantError(
+                "Scale is not reachable — it sleeps when idle; step on it "
+                "to wake it and try again"
+            )
+        client = WyzeScaleClient(on_live_weight=self._handle_live_weight)
+        try:
+            await client.connect(ble_device)
+            await client.sync_time(_utc_to_device_epoch(dt_util.utcnow()))
+        except Exception as err:
+            await client.disconnect()
+            raise HomeAssistantError(f"Failed to connect to scale: {err}") from err
+        return client
+
+    async def async_add_user(
+        self,
+        *,
+        sex_male: bool,
+        age: int,
+        height_cm: int,
+        weight_kg: float,
+        athlete_mode: bool = False,
+        weight_only: bool = False,
+    ) -> str:
+        """Create a new user profile on the scale; returns its user_id hex.
+
+        The weight is the person's approximate weight — the scale uses it
+        to match weigh-ins to users, so it should be roughly right.
+        """
+        record = UserRecord(
+            user_id=secrets.token_bytes(16),
+            weight_raw=round(weight_kg * 100),
+            sex=1 if sex_male else 0,
+            age=age,
+            height=height_cm,
+            athlete_mode=1 if athlete_mode else 0,
+            only_weight=1 if weight_only else 0,
+            last_impedance=0,
+        )
+        async with self._sync_lock:
+            client = await self._async_connect_for_command()
+            try:
+                # Create flow per PROTOCOL.md §5.9: select the record as
+                # current user, then store it.
+                await client.select_user(record)
+                await client.update_user(record)
+                for stored in await client.get_users():
+                    self._merge_profile(stored)
+                # get_users can miss the new record if the scale splits or
+                # delays the reply; make sure it exists locally regardless.
+                if record.user_id_hex not in self._scale_data.users:
+                    self._merge_profile(record)
+            except HomeAssistantError:
+                raise
+            except Exception as err:
+                raise HomeAssistantError(f"Adding user failed: {err}") from err
+            finally:
+                await client.disconnect()
+                await self._store.async_save(self._scale_data.as_dict())
+                self.async_update_listeners()
+        _LOGGER.info("Created scale user %s", record.user_id_hex)
+        return record.user_id_hex
+
+    async def async_delete_user(self, user_id_hex: str) -> None:
+        """Delete a user profile from the scale and remove its sub-device."""
+        try:
+            user_id = bytes.fromhex(user_id_hex)
+        except ValueError as err:
+            raise HomeAssistantError(f"Invalid user_id: {err}") from err
+        if len(user_id) != 16:
+            raise HomeAssistantError("user_id must be 32 hex characters (16 bytes)")
+        async with self._sync_lock:
+            client = await self._async_connect_for_command()
+            try:
+                await client.delete_user(user_id)
+            except Exception as err:
+                raise HomeAssistantError(f"Deleting user failed: {err}") from err
+            finally:
+                await client.disconnect()
+            self._scale_data.users.pop(user_id_hex, None)
+            await self._store.async_save(self._scale_data.as_dict())
+            self.async_update_listeners()
+        device_registry = dr.async_get(self.hass)
+        device = device_registry.async_get_device(
+            identifiers={(DOMAIN, f"{self._address}-{user_id_hex}")}
+        )
+        if device is not None:
+            device_registry.async_remove_device(device.id)
+        _LOGGER.info("Deleted scale user %s", user_id_hex)
 
     # ------------------------------------------------------------------
     # Data handling
