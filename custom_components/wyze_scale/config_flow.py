@@ -12,17 +12,36 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
     OptionsFlow,
+    SubentryFlowResult,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+)
 
 from .const import (
     CONF_ADDRESS,
     CONF_ADVERTISEMENT_TRIGGER,
+    CONF_AGE,
+    CONF_ATHLETE_MODE,
     CONF_DISPLAY_UNIT,
     CONF_FALLBACK_INTERVAL,
+    CONF_HEIGHT_CM,
+    CONF_NAME,
+    CONF_SEX,
     CONF_SYNC_COOLDOWN,
+    CONF_WEIGHT_KG,
+    CONF_WEIGHT_ONLY,
     DEFAULT_ADVERTISEMENT_TRIGGER,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_SYNC_COOLDOWN,
@@ -30,11 +49,109 @@ from .const import (
     MAX_FALLBACK_INTERVAL,
     MAX_SYNC_COOLDOWN,
     MIN_SYNC_COOLDOWN,
+    SEX_FEMALE,
+    SEX_MALE,
+    SUBENTRY_TYPE_USER,
     UNIT_OPTION_KG,
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
 )
+from .users import UserProfile
 from .wyze_ble import LOCAL_NAME, SERVICE_UUID
+
+
+def _user_profile_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Form schema for a scale user's biometric profile."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, "")): TextSelector(),
+            vol.Required(
+                CONF_SEX, default=defaults.get(CONF_SEX, SEX_FEMALE)
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[SEX_MALE, SEX_FEMALE],
+                    translation_key="sex",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(CONF_AGE, default=defaults.get(CONF_AGE, 30)): NumberSelector(
+                NumberSelectorConfig(min=1, max=120, step=1, mode=NumberSelectorMode.BOX)
+            ),
+            vol.Required(
+                CONF_HEIGHT_CM, default=defaults.get(CONF_HEIGHT_CM, 170)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=50, max=250, step=1, unit_of_measurement="cm",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_WEIGHT_KG, default=defaults.get(CONF_WEIGHT_KG, 70)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=1, max=300, step=0.5, unit_of_measurement="kg",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_ATHLETE_MODE, default=defaults.get(CONF_ATHLETE_MODE, False)
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_WEIGHT_ONLY, default=defaults.get(CONF_WEIGHT_ONLY, False)
+            ): BooleanSelector(),
+        }
+    )
+
+
+def _profile_from_input(user_id: str, data: dict[str, Any]) -> UserProfile:
+    return UserProfile(
+        user_id=user_id,
+        name=data[CONF_NAME],
+        sex_male=data[CONF_SEX] == SEX_MALE,
+        age=int(data[CONF_AGE]),
+        height_cm=int(data[CONF_HEIGHT_CM]),
+        weight_kg=float(data[CONF_WEIGHT_KG]),
+        athlete_mode=bool(data[CONF_ATHLETE_MODE]),
+        weight_only=bool(data[CONF_WEIGHT_ONLY]),
+    )
+
+
+class WyzeScaleUserSubentryFlow(ConfigSubentryFlow):
+    """Add or edit a scale user (one config subentry per user)."""
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add a new scale user."""
+        if user_input is not None:
+            profile = _profile_from_input(UserProfile.new_user_id(), user_input)
+            return self.async_create_entry(
+                title=profile.name,
+                data=profile.to_subentry_data(),
+                unique_id=profile.user_id,
+            )
+        return self.async_show_form(
+            step_id="user", data_schema=_user_profile_schema({})
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit an existing scale user's profile."""
+        subentry = self._get_reconfigure_subentry()
+        if user_input is not None:
+            existing = UserProfile.from_subentry_data(dict(subentry.data))
+            profile = _profile_from_input(existing.user_id, user_input)
+            return self.async_update_and_abort(
+                self._get_entry(),
+                subentry,
+                title=profile.name,
+                data=profile.to_subentry_data(),
+            )
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_user_profile_schema(dict(subentry.data)),
+        )
 
 
 def _is_wyze_scale(service_info: BluetoothServiceInfoBleak) -> bool:
@@ -122,6 +239,13 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> "WyzeScaleOptionsFlow":
         return WyzeScaleOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        return {SUBENTRY_TYPE_USER: WyzeScaleUserSubentryFlow}
 
 
 class WyzeScaleOptionsFlow(OptionsFlow):

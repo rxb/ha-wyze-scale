@@ -6,6 +6,23 @@ DOMAIN = "wyze_scale"
 
 CONF_ADDRESS = "address"
 
+# Config subentry type: one per scale user.
+SUBENTRY_TYPE_USER = "user"
+
+# Subentry data keys (the editable biometric profile the scale uses for
+# body-composition math).
+CONF_USER_ID = "user_id"
+CONF_NAME = "name"
+CONF_SEX = "sex"
+CONF_AGE = "age"
+CONF_HEIGHT_CM = "height_cm"
+CONF_WEIGHT_KG = "weight_kg"
+CONF_ATHLETE_MODE = "athlete_mode"
+CONF_WEIGHT_ONLY = "weight_only"
+
+SEX_MALE = "male"
+SEX_FEMALE = "female"
+
 # Options
 CONF_ADVERTISEMENT_TRIGGER = "advertisement_trigger"
 CONF_SYNC_COOLDOWN = "sync_cooldown"

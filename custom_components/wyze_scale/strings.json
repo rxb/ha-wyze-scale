@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Add Wyze Scale",
-        "description": "Select a discovered scale. The scale only advertises while in use - step on it to wake it if none are listed.",
+        "description": "Select a discovered scale. If none are listed, make sure the scale is powered and in range, then step on it to prompt an advertisement.",
         "data": {
           "address": "Device"
         }
@@ -17,7 +17,7 @@
     "abort": {
       "already_configured": "This scale is already configured",
       "already_in_progress": "Configuration flow is already in progress",
-      "no_devices_found": "No Wyze scales found. The scale only advertises while in use - step on it and try again."
+      "no_devices_found": "No Wyze scales found. Make sure the scale is powered and in range, then step on it and try again."
     }
   },
   "options": {
@@ -30,6 +30,56 @@
           "fallback_interval": "Also sync every this many seconds (0 = disabled)",
           "display_unit": "Unit shown on the scale display (none = leave unchanged)"
         }
+      }
+    }
+  },
+  "config_subentries": {
+    "user": {
+      "entry_type": "Scale user",
+      "initiate_flow": {
+        "user": "Add user"
+      },
+      "step": {
+        "user": {
+          "title": "Add a scale user",
+          "description": "Create a user profile on the scale. The scale uses this for body-composition measurements and matches each weigh-in to the closest profile.",
+          "data": {
+            "name": "Name",
+            "sex": "Sex",
+            "age": "Age",
+            "height_cm": "Height",
+            "weight_kg": "Approximate weight",
+            "athlete_mode": "Athlete mode",
+            "weight_only": "Weight only (skip body composition)"
+          },
+          "data_description": {
+            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit scale user",
+          "description": "Change this user's profile. Updates are pushed to the scale on the next sync.",
+          "data": {
+            "name": "Name",
+            "sex": "Sex",
+            "age": "Age",
+            "height_cm": "Height",
+            "weight_kg": "Approximate weight",
+            "athlete_mode": "Athlete mode",
+            "weight_only": "Weight only (skip body composition)"
+          },
+          "data_description": {
+            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user."
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "sex": {
+      "options": {
+        "male": "Male",
+        "female": "Female"
       }
     }
   }

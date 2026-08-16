@@ -16,18 +16,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from types import MappingProxyType
+
 from homeassistant.components import bluetooth
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -47,10 +46,12 @@ from .const import (
     LIVE_IDLE_TIMEOUT,
     LIVE_MAX_WAIT,
     STORAGE_VERSION,
+    SUBENTRY_TYPE_USER,
     UNIT_OPTION_KG,
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
 )
+from .users import UserProfile, merge_import_name, reconcile
 from .wyze_ble import (
     Measurement,
     UserRecord,
@@ -58,6 +59,34 @@ from .wyze_ble import (
     WyzeScaleError,
 )
 from .wyze_ble.protocol import MEASURE_STATE_FINAL, UNIT_KG, UNIT_LB
+
+
+def _profile_from_record(record: UserRecord) -> UserProfile:
+    """Convert a scale user record into a UserProfile (no display name)."""
+    return UserProfile(
+        user_id=record.user_id_hex,
+        name="",
+        sex_male=bool(record.sex),
+        age=record.age,
+        height_cm=record.height,
+        weight_kg=record.weight_raw / 100,
+        athlete_mode=bool(record.athlete_mode),
+        weight_only=bool(record.only_weight),
+    )
+
+
+def _record_from_profile(profile: UserProfile) -> UserRecord:
+    """Convert a UserProfile into a 25-byte scale user record."""
+    return UserRecord(
+        user_id=bytes.fromhex(profile.user_id),
+        weight_raw=round(profile.weight_kg * 100),
+        sex=1 if profile.sex_male else 0,
+        age=int(profile.age),
+        height=int(profile.height_cm),
+        athlete_mode=1 if profile.athlete_mode else 0,
+        only_weight=1 if profile.weight_only else 0,
+        last_impedance=0,
+    )
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -225,10 +254,24 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         self._last_live: float | None = None
         self._cancel_bluetooth: Callable[[], None] | None = None
         self._manual_poll = False
+        # User-management reconciliation state (persisted).
+        self._tombstones: set[str] = set()  # user_ids deleted in HA
+        self._pushed: dict[str, list[int]] = {}  # user_id -> scale_fields
+        self._known_subentries: set[str] = set()  # last-seen subentry user_ids
 
     @property
     def address(self) -> str:
         return self._address
+
+    def _subentry_profiles(self) -> dict[str, tuple[str, UserProfile]]:
+        """Desired users from config subentries: user_id -> (subentry_id, profile)."""
+        result: dict[str, tuple[str, UserProfile]] = {}
+        for subentry_id, subentry in self.config_entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_USER:
+                continue
+            profile = UserProfile.from_subentry_data(dict(subentry.data))
+            result[profile.user_id] = (subentry_id, profile)
+        return result
 
     # ------------------------------------------------------------------
     # Setup / teardown
@@ -238,14 +281,60 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         """Restore persisted state and start listening for advertisements."""
         stored = await self._store.async_load()
         if stored:
-            self._scale_data = ScaleData.from_dict(stored)
+            # Back-compat: earlier versions stored ScaleData at the top level.
+            scale_data = stored.get("scale_data", stored)
+            self._scale_data = ScaleData.from_dict(scale_data)
+            self._tombstones = set(stored.get("tombstones", []))
+            self._pushed = {
+                uid: list(fields)
+                for uid, fields in stored.get("pushed_profiles", {}).items()
+            }
+            self._known_subentries = set(stored.get("known_subentries", []))
         self.async_set_updated_data(self._scale_data)
+
+        # Detect users deleted in HA while we were unloaded: they were known
+        # subentries before but are gone now. Tombstone them so the next sync
+        # removes them from the scale (and doesn't re-import them).
+        current = set(self._subentry_profiles())
+        deleted = self._known_subentries - current
+        if deleted:
+            self._tombstones |= deleted
+            for uid in deleted:
+                self._pushed.pop(uid, None)
+                self._scale_data.users.pop(uid, None)
+        self._known_subentries = current
+        await self._async_save()
+
         self._cancel_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_handle_advertisement,
             bluetooth.BluetoothCallbackMatcher(address=self._address),
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
+
+        # If there's pending user-management work (a delete, an added or
+        # edited profile not yet on the scale), sync soon to push it.
+        if self._has_pending_user_work():
+            self.hass.async_create_task(self.async_request_refresh())
+
+    def _has_pending_user_work(self) -> bool:
+        if self._tombstones:
+            return True
+        for user_id, (_sid, profile) in self._subentry_profiles().items():
+            if self._pushed.get(user_id) != list(profile.scale_fields()):
+                return True
+        return False
+
+    def _data_for_store(self) -> dict[str, Any]:
+        return {
+            "scale_data": self._scale_data.as_dict(),
+            "tombstones": sorted(self._tombstones),
+            "pushed_profiles": self._pushed,
+            "known_subentries": sorted(self._known_subentries),
+        }
+
+    async def _async_save(self) -> None:
+        await self._store.async_save(self._data_for_store())
 
     async def async_shutdown(self) -> None:
         if self._cancel_bluetooth is not None:
@@ -348,7 +437,15 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             for record in users:
                 self._merge_profile(record)
 
+            # Push HA-side user changes and import scale-side users.
+            try:
+                await self._async_reconcile_users(client, users)
+            except WyzeScaleError as err:
+                _LOGGER.warning("User reconciliation aborted: %s", err)
+
             for record in users:
+                if record.user_id_hex in self._tombstones:
+                    continue  # deleted this session; don't drain its history
                 try:
                     # Records are recorded (and queued for disk) via the
                     # callback BEFORE each ack deletes them from the scale.
@@ -381,7 +478,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             raise UpdateFailed(f"Sync with scale failed: {err}") from err
         finally:
             await client.disconnect()
-            await self._store.async_save(self._scale_data.as_dict())
+            await self._async_save()
 
     async def _async_linger_for_live(self, client: WyzeScaleClient) -> None:
         """Stay connected while live weight frames are streaming."""
@@ -401,103 +498,76 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             await asyncio.sleep(1)
 
     # ------------------------------------------------------------------
-    # User management (add_user / delete_user services)
+    # User reconciliation (config subentries <-> scale)
     # ------------------------------------------------------------------
 
-    async def _async_connect_for_command(self) -> WyzeScaleClient:
-        """Open a short command session; caller must disconnect."""
-        ble_device = bluetooth.async_ble_device_from_address(
-            self.hass, self._address, connectable=True
-        )
-        if ble_device is None:
-            raise HomeAssistantError(
-                "Scale is not reachable - it sleeps when idle; step on it "
-                "to wake it and try again"
-            )
-        client = WyzeScaleClient(on_live_weight=self._handle_live_weight)
-        try:
-            await client.connect(ble_device)
-            await client.sync_time(_utc_to_device_epoch(dt_util.utcnow()))
-        except Exception as err:
-            await client.disconnect()
-            raise HomeAssistantError(f"Failed to connect to scale: {err}") from err
-        return client
+    async def _async_reconcile_users(
+        self, client: WyzeScaleClient, records: list[UserRecord]
+    ) -> None:
+        """Make the scale's users agree with the HA config subentries.
 
-    async def async_add_user(
-        self,
-        *,
-        sex_male: bool,
-        age: int,
-        height_cm: int,
-        weight_kg: float,
-        athlete_mode: bool = False,
-        weight_only: bool = False,
-    ) -> str:
-        """Create a new user profile on the scale; returns its user_id hex.
-
-        The weight is the person's approximate weight - the scale uses it
-        to match weigh-ins to users, so it should be roughly right.
+        Runs inside a sync session with an open connection. Pushes HA-side
+        creates/updates/deletes to the scale, and imports scale-side users
+        (e.g. created in the Wyze app) as new subentries.
         """
-        record = UserRecord(
-            user_id=secrets.token_bytes(16),
-            weight_raw=round(weight_kg * 100),
-            sex=1 if sex_male else 0,
-            age=age,
-            height=height_cm,
-            athlete_mode=1 if athlete_mode else 0,
-            only_weight=1 if weight_only else 0,
-            last_impedance=0,
-        )
-        async with self._sync_lock:
-            client = await self._async_connect_for_command()
-            try:
-                # Create flow per PROTOCOL.md §5.9: select the record as
-                # current user, then store it.
-                await client.select_user(record)
-                await client.update_user(record)
-                for stored in await client.get_users():
-                    self._merge_profile(stored)
-                # get_users can miss the new record if the scale splits or
-                # delays the reply; make sure it exists locally regardless.
-                if record.user_id_hex not in self._scale_data.users:
-                    self._merge_profile(record)
-            except HomeAssistantError:
-                raise
-            except Exception as err:
-                raise HomeAssistantError(f"Adding user failed: {err}") from err
-            finally:
-                await client.disconnect()
-                await self._store.async_save(self._scale_data.as_dict())
-                self.async_update_listeners()
-        _LOGGER.info("Created scale user %s", record.user_id_hex)
-        return record.user_id_hex
+        scale_users = {r.user_id_hex: _profile_from_record(r) for r in records}
+        subentries = {
+            uid: profile for uid, (_sid, profile) in self._subentry_profiles().items()
+        }
+        plan = reconcile(scale_users, subentries, self._tombstones)
+        if plan.is_empty and not plan.tombstones_cleared:
+            self._known_subentries = set(subentries)
+            return
 
-    async def async_delete_user(self, user_id_hex: str) -> None:
-        """Delete a user profile from the scale and remove its sub-device."""
-        try:
-            user_id = bytes.fromhex(user_id_hex)
-        except ValueError as err:
-            raise HomeAssistantError(f"Invalid user_id: {err}") from err
-        if len(user_id) != 16:
-            raise HomeAssistantError("user_id must be 32 hex characters (16 bytes)")
-        async with self._sync_lock:
-            client = await self._async_connect_for_command()
-            try:
-                await client.delete_user(user_id)
-            except Exception as err:
-                raise HomeAssistantError(f"Deleting user failed: {err}") from err
-            finally:
-                await client.disconnect()
-            self._scale_data.users.pop(user_id_hex, None)
-            await self._store.async_save(self._scale_data.as_dict())
-            self.async_update_listeners()
-        device_registry = dr.async_get(self.hass)
-        device = device_registry.async_get_device(
-            identifiers={(DOMAIN, f"{self._address}-{user_id_hex}")}
-        )
-        if device is not None:
-            device_registry.async_remove_device(device.id)
-        _LOGGER.info("Deleted scale user %s", user_id_hex)
+        for user_id in plan.to_delete:
+            await client.delete_user(bytes.fromhex(user_id))
+            self._tombstones.discard(user_id)
+            self._pushed.pop(user_id, None)
+            self._scale_data.users.pop(user_id, None)
+            _LOGGER.info("Deleted scale user %s from the scale", user_id[:8])
+
+        for user_id in plan.tombstones_cleared:
+            self._tombstones.discard(user_id)
+
+        for profile in plan.to_create:
+            record = _record_from_profile(profile)
+            await client.select_user(record)  # create flow: select then store
+            await client.update_user(record)
+            self._pushed[profile.user_id] = list(profile.scale_fields())
+            self._merge_profile(record)
+            _LOGGER.info("Created scale user %s on the scale", profile.user_id[:8])
+
+        for profile in plan.to_update:
+            record = _record_from_profile(profile)
+            await client.update_user(record)
+            self._pushed[profile.user_id] = list(profile.scale_fields())
+            self._merge_profile(record)
+            _LOGGER.info("Updated scale user %s on the scale", profile.user_id[:8])
+
+        if plan.to_import:
+            self._import_users(plan.to_import)
+
+        self._known_subentries = set(subentries) | {
+            p.user_id for p in plan.to_import
+        }
+
+    def _import_users(self, profiles: list[UserProfile]) -> None:
+        """Create HA subentries for users discovered on the scale."""
+        for profile in profiles:
+            named = merge_import_name(profile)
+            subentry = ConfigSubentry(
+                data=MappingProxyType(named.to_subentry_data()),
+                subentry_type=SUBENTRY_TYPE_USER,
+                title=named.name,
+                unique_id=named.user_id,
+            )
+            self.hass.config_entries.async_add_subentry(self.config_entry, subentry)
+            # Already on the scale, so record it as pushed.
+            self._pushed[named.user_id] = list(named.scale_fields())
+            _LOGGER.info("Imported scale user %s as a device", named.user_id[:8])
+        # async_add_subentry fires the entry update listener, which reloads
+        # the entry (serialized on its setup_lock) and creates the new
+        # subentry's entities. The reload runs as a task, after this sync.
 
     # ------------------------------------------------------------------
     # Data handling
@@ -578,4 +648,4 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         if user.last is None or when >= user.last.time:
             user.last = data
         self.async_update_listeners()
-        self._store.async_delay_save(self._scale_data.as_dict, 2)
+        self._store.async_delay_save(self._data_for_store, 2)

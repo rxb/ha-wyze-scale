@@ -17,14 +17,16 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfMass,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.config_entries import ConfigSubentry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import WyzeScaleConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, SUBENTRY_TYPE_USER
 from .coordinator import ScaleData, UserData, WyzeScaleCoordinator
+from .users import UserProfile
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -187,33 +189,31 @@ USER_SENSORS: tuple[WyzeScaleUserSensorDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: WyzeScaleConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up sensors; add per-user entities as users are discovered."""
+    """Set up scale-level sensors and one sensor set per user subentry.
+
+    Each scale user is a config subentry; its sensors live on a sub-device
+    tied to that subentry. New/edited/removed subentries are picked up when
+    the entry reloads (the coordinator schedules a reload after importing a
+    user, and HA reloads after any subentry change).
+    """
     coordinator = entry.runtime_data
 
     async_add_entities(
         WyzeScaleSensor(coordinator, description) for description in SCALE_SENSORS
     )
 
-    known_users: set[str] = set()
-
-    @callback
-    def _async_add_new_users() -> None:
-        new_entities: list[SensorEntity] = []
-        for user_id in coordinator.data.users:
-            if user_id in known_users:
-                continue
-            known_users.add(user_id)
-            new_entities.extend(
-                WyzeScaleUserSensor(coordinator, user_id, description)
+    for subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type != SUBENTRY_TYPE_USER:
+            continue
+        async_add_entities(
+            [
+                WyzeScaleUserSensor(coordinator, subentry, description)
                 for description in USER_SENSORS
-            )
-        if new_entities:
-            async_add_entities(new_entities)
-
-    _async_add_new_users()
-    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_users))
+            ],
+            config_subentry_id=subentry_id,
+        )
 
 
 def scale_device_info(coordinator: WyzeScaleCoordinator) -> DeviceInfo:
@@ -260,26 +260,31 @@ class WyzeScaleSensor(WyzeScaleBaseEntity, SensorEntity):
 
 
 class WyzeScaleUserSensor(WyzeScaleBaseEntity, SensorEntity):
-    """Per-user sensor, attached to a user sub-device."""
+    """Per-user sensor, attached to a user sub-device (config subentry).
+
+    Measurement values come from the coordinator (keyed by user_id); the
+    profile shown as attributes comes from the subentry the user edits.
+    """
 
     entity_description: WyzeScaleUserSensorDescription
 
     def __init__(
         self,
         coordinator: WyzeScaleCoordinator,
-        user_id: str,
+        subentry: ConfigSubentry,
         description: WyzeScaleUserSensorDescription,
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
-        self._user_id = user_id
-        self._attr_unique_id = f"{coordinator.address}-{user_id}-{description.key}"
+        self._subentry = subentry
+        self._user_id = subentry.data["user_id"]
+        self._attr_unique_id = f"{coordinator.address}-{self._user_id}-{description.key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{coordinator.address}-{user_id}")},
+            identifiers={(DOMAIN, f"{coordinator.address}-{self._user_id}")},
             via_device=(DOMAIN, coordinator.address),
             manufacturer="Wyze",
             model="Scale X user",
-            name=f"Scale user {user_id[:6].upper()}",
+            name=subentry.title,
         )
 
     @property
@@ -293,15 +298,14 @@ class WyzeScaleUserSensor(WyzeScaleBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any] | None:
         if self.entity_description.key != "weight":
             return None
+        profile = UserProfile.from_subentry_data(dict(self._subentry.data))
         user = self.coordinator.data.users.get(self._user_id)
-        if user is None:
-            return None
         return {
-            "user_id": user.user_id,
-            "sex": "male" if user.sex else "female",
-            "age": user.age,
-            "height_cm": user.height,
-            "athlete_mode": bool(user.athlete_mode),
-            "weight_only_mode": bool(user.only_weight),
-            "measurement_source": user.last.source if user.last else None,
+            "user_id": self._user_id,
+            "sex": "male" if profile.sex_male else "female",
+            "age": profile.age,
+            "height_cm": profile.height_cm,
+            "athlete_mode": profile.athlete_mode,
+            "weight_only_mode": profile.weight_only,
+            "measurement_source": user.last.source if user and user.last else None,
         }

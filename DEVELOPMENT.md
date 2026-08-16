@@ -8,19 +8,43 @@ protocol specification is in [PROTOCOL.md](PROTOCOL.md).
 
 ```
 custom_components/wyze_scale/
-├── __init__.py        # setup, add_user/delete_user actions
-├── config_flow.py     # Bluetooth discovery + options flow
-├── coordinator.py     # sync sessions, triggers, persistence, data model
-├── sensor.py          # scale + per-user sensors (dynamic sub-devices)
+├── __init__.py        # entry setup, reload-on-change listener
+├── config_flow.py     # Bluetooth discovery, options, user subentry flow
+├── coordinator.py     # sync sessions, triggers, persistence, reconciliation
+├── users.py           # pure profile model + scale<->HA reconcile logic
+├── sensor.py          # scale sensors + per-subentry user sensors
 ├── button.py          # Poll now
-├── services.yaml      # action UI metadata
 └── wyze_ble/          # standalone protocol library (no HA imports)
     ├── xxtea.py       # XXTEA cipher, 8-byte-block ECB variant
     ├── protocol.py    # framing, key exchange, message build/parse
     └── client.py      # asyncio BLE client (bleak + bleak-retry-connector)
 scripts/scale_tool.py  # standalone scan/sync/user-management tester
 tests/test_protocol.py # protocol unit tests
+tests/test_users.py    # reconciliation unit tests
 ```
+
+## Scale users as config subentries
+
+Each scale user is a config **subentry** of the scale's config entry, so
+they're managed in the UI (add / edit / delete on the scale's device page),
+scoped per scale. See `config_flow.WyzeScaleUserSubentryFlow`.
+
+- **Desired state** lives in the subentries (profile: name, sex, age,
+  height, approx weight, athlete/weight-only).
+- **Measurements** live in the coordinator/store keyed by `user_id` and feed
+  the sensors. `sensor.async_setup_entry` iterates `entry.subentries` and
+  adds one sensor set per user with `config_subentry_id`.
+- **Reconciliation** (`users.reconcile`, pure + unit tested) runs inside the
+  sync session after `get_users`: it pushes HA-side creates/updates/deletes
+  to the scale and imports scale-side users (e.g. Wyze-app-created) as new
+  subentries via `async_add_subentry`.
+- **Deletions** are detected on load (a previously-known subentry is gone)
+  and recorded as tombstones so the next sync deletes the user from the
+  scale and doesn't re-import it. The coordinator persists `tombstones`,
+  `pushed_profiles` (last-pushed scale fields, for drift detection), and
+  `known_subentries` alongside the measurement data.
+- Any subentry or option change fires the entry update listener, which
+  reloads the entry (serialized on `setup_lock`) to rebuild entities.
 
 ## Architecture
 
@@ -67,10 +91,10 @@ unreachable anyway).
 
 ### Per-user sub-devices
 
-Users are exposed as sub-devices via `via_device`. Entity platforms add
-entities dynamically: a coordinator listener checks for unseen user IDs on
-every update and adds their sensors, so users created mid-flight (first
-weigh-in, `add_user` action) appear without a reload.
+Each user's sensors live on a sub-device (`via_device` the scale) tied to
+its config subentry via `config_subentry_id`. New/edited/removed users are
+picked up on entry reload (see the subentry section above), not via a
+dynamic add-listener.
 
 ### Timestamps
 
@@ -176,6 +200,8 @@ a passive background integration, which is why it's deferred rather than
 wired in. My original probe also failed only because it appended a
 spurious argument byte to 0x10.
 
-Not yet exercised on hardware: the history ack/delete flow (records were
-delivered but deliberately left unacked), multi-message user lists, and
-`add_user` / `delete_user`.
+Not yet exercised on hardware/live HA: the history ack/delete flow (records
+were delivered but deliberately left unacked), multi-message user lists, and
+the full subentry user-reconciliation path (create/update/delete on the
+scale, import as subentries). The pure reconcile logic has unit tests
+(`tests/test_users.py`); the BLE and HA-wiring side needs a live instance.

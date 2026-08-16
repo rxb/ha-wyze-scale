@@ -15,8 +15,8 @@ on the next sync).
 
 ## Features
 
-- **Automatic weigh-in collection** - the integration notices when the scale
-  wakes up, connects, and pulls the new measurement
+- **Automatic weigh-in collection** - the integration connects shortly after
+  a weigh-in and pulls the new measurement
 - **Offline catch-up** - measurements taken while HA was off or out of range
   are stored on the scale and synced later, with their original timestamps
 - **A device per person** - every user profile on the scale appears as its
@@ -24,14 +24,14 @@ on the next sync).
   Home Assistant person
 - **Full body composition** - weight, BMI, body fat, muscle mass, bone mass,
   body water, protein, lean body mass, visceral fat, BMR, and metabolic age
-- **Battery friendly** - never holds a connection open; syncs are triggered
-  by the scale waking up, with only an occasional catch-up check (default
-  every 6 hours, configurable) that skips silently if the scale is asleep
+- **Battery friendly** - never holds a connection open and never polls on a
+  fixed schedule; it connects when the scale appears over Bluetooth, plus an
+  occasional catch-up check (default every 6 hours, configurable)
 - **User management from HA** - create and delete scale user profiles with
   actions, no Wyze app needed
 - **Auto-discovery** - HA detects the scale over Bluetooth automatically
 - **Survives restarts** - all readings are stored in HA, so nothing goes
-  unavailable while the scale sleeps
+  unavailable between weigh-ins
 
 ---
 
@@ -41,7 +41,7 @@ on the next sync).
 
 | Entity | Description |
 |--------|-------------|
-| Poll now | Button - force an immediate sync (the scale must be awake) |
+| Poll now | Button - connect and sync immediately |
 | Battery | Scale battery level *(diagnostic)* |
 | Last sync | When the last successful sync finished *(diagnostic)* |
 
@@ -70,21 +70,31 @@ itself is configurable (see Options).
 Body-composition sensors are empty for weight-only profiles or when the
 scale couldn't measure impedance (e.g. weighing with socks on).
 
-> **Which user is which?** Scale users are identified by an anonymous ID, so
-> new sub-devices are named like "Scale user A1B2C3". Weigh yourself once,
-> see which device updated, and rename it.
+> **Which user is which?** Users the Wyze app created are imported
+> automatically and named like "Scale user A1B2C3". Weigh yourself once, see
+> which device updated, then rename it (or edit its profile - see below).
 
 ---
 
-## Actions
+## Managing scale users
 
-| Action | Description |
-|--------|-------------|
-| `wyze_scale.add_user` | Create a user profile on the scale (sex, age, height, and approximate weight - the scale matches weigh-ins to the closest profile). The new person appears as a sub-device immediately. |
-| `wyze_scale.delete_user` | Delete a user profile from the scale and remove its sub-device. |
+Scale users are managed entirely from the UI, per scale. On the scale's
+device page (**Settings → Devices & Services → Wyze Scale → the scale**):
 
-Both actions need the scale to be awake - step on it first. The `address`
-field is only needed if you have more than one scale.
+- **Add user** - a button that opens a form (name, sex, age, height,
+  approximate weight, athlete / weight-only options). The user is created on
+  the scale and appears as a new sub-device.
+- **Configure** on a user - edit that person's profile; changes are pushed
+  to the scale on the next sync.
+- **Delete** a user - removes it from the scale and deletes the sub-device.
+
+Because each scale is its own device, there's no ambiguity when you have
+more than one scale: you manage each scale's users from that scale's page.
+
+Users created in the Wyze app are imported automatically as editable users
+the first time HA sees them. The approximate weight is only used by the
+scale to match a weigh-in to the closest user, so it just needs to be
+roughly right.
 
 ## Events
 
@@ -141,15 +151,16 @@ then download **Wyze Scale** and restart Home Assistant.
 
 ### Automatic discovery
 
-Step on the scale (it only transmits while awake). A discovered **Wyze
-Scale** appears under **Settings → Devices & Services** - click
-**Configure** and confirm.
+A discovered **Wyze Scale** appears under **Settings → Devices &
+Services** - click **Configure** and confirm. If it isn't detected, step
+on the scale to prompt an advertisement, then check again.
 
 ### Manual setup
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Wyze Scale**
-3. Pick your scale from the list (step on it first if the list is empty)
+3. Pick your scale from the list (if it's empty, make sure the scale has
+   power and is in range, then step on it and retry)
 
 ### Options
 
@@ -157,29 +168,29 @@ Click **Configure** on the integration entry to adjust:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| Sync automatically when the scale wakes up | on | Connect when the scale starts transmitting |
+| Sync automatically when the scale wakes up | on | Connect when the scale (re)appears over Bluetooth |
 | Minimum seconds between automatic syncs | 120 | Rate limit for automatic syncs - protects the scale's battery |
-| Also sync every N seconds | 21600 (6 h) | Periodic catch-up sync in case a wake-up went unnoticed; 0 disables |
+| Also sync every N seconds | 21600 (6 h) | Periodic catch-up sync in case the advertisement trigger missed one; 0 disables |
 | Unit shown on the scale display | none | Push kg or lb to the scale's display (doesn't affect HA units) |
 
 ---
 
 ## How syncing works
 
-The scale is battery powered and spends nearly all its time asleep with its
-radio off. This integration is built around that:
+The scale is battery powered, so the integration is built to be gentle on
+it: it never holds a Bluetooth connection open and never polls on a fixed
+schedule.
 
 1. Home Assistant **listens passively** for the scale's Bluetooth
    advertisements - this costs the scale nothing.
-2. When the scale wakes up (someone stepped on it), the integration
-   **connects briefly**, collects any stored measurements and the live
-   weigh-in, and **disconnects**.
+2. When the scale appears (or reappears after being out of range), the
+   integration **connects briefly**, collects any stored measurements and
+   the live weigh-in, and **disconnects**.
 3. As a safety net, a **periodic catch-up sync** (default every 6 hours,
-   configurable, 0 to disable) collects anything a missed wake-up left
-   behind. It checks whether the scale is transmitting first and skips
-   silently if it's asleep.
+   configurable, 0 to disable) collects anything the advertisement trigger
+   missed. If the scale can't be reached, it just tries again next time.
 4. Everything is saved in Home Assistant, so entities keep their values
-   while the scale sleeps and across HA restarts.
+   between weigh-ins and across HA restarts.
 
 > **Note:** collected measurements are removed from the scale's internal
 > memory as they're synced (this is how the scale's protocol works - the
@@ -189,9 +200,6 @@ radio off. This integration is built around that:
 
 ## Known limitations
 
-- **The scale can't be woken remotely.** Bluetooth can't turn it on - *Poll
-  now* and the user-management actions only work while the scale is awake
-  (shortly after someone steps on it).
 - **One connection at a time.** While the Wyze app is connected to the
   scale, this integration can't sync, and vice versa.
 - **Weigh-ins are matched by weight.** Like the Wyze app, the scale assigns
@@ -209,19 +217,22 @@ radio off. This integration is built around that:
 
 ### "Scale is not reachable" when pressing Poll now
 
-The scale is asleep. Step on it to wake it, then press the button again
-(or just let the automatic sync handle it).
+The scale is momentarily unreachable over Bluetooth. Wait a moment and try
+again (stepping on the scale will also wake it), or just let the automatic
+sync handle it. If it happens often, move the Bluetooth adapter/proxy
+closer to the scale.
 
 ### No devices found during setup
 
-The scale only transmits while awake - step on it, then retry the setup.
-Also confirm HA's Bluetooth integration works (Settings → Devices &
-Services → Bluetooth) and the scale is within range of the adapter/proxy.
+Confirm HA's Bluetooth integration works (Settings → Devices & Services →
+Bluetooth) and the scale is powered and within range of the adapter/proxy.
+Stepping on the scale prompts a fresh advertisement, which can help it be
+discovered.
 
 ### A weigh-in didn't show up
 
-- Check the **Last sync** sensor - if it's stale, HA never noticed the
-  wake-up; move the Bluetooth adapter/proxy closer to the scale.
+- Check the **Last sync** sensor - if it's stale, HA hasn't synced
+  recently; move the Bluetooth adapter/proxy closer to the scale.
 - The measurement isn't lost: it's stored on the scale and will arrive with
   its original timestamp on the next successful sync (press **Poll now**
   while standing on the scale to force one).
