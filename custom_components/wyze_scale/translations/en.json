@@ -37,7 +37,12 @@
     "user": {
       "entry_type": "Scale user",
       "initiate_flow": {
-        "user": "Add user"
+        "user": "Add user",
+        "reconfigure": "Edit user"
+      },
+      "abort": {
+        "reconfigure_successful": "User updated",
+        "already_configured": "This user already exists"
       },
       "step": {
         "user": {

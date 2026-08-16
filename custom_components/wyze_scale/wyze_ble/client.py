@@ -44,6 +44,12 @@ class WyzeScaleError(Exception):
     """Communication or protocol failure talking to the scale."""
 
 
+# Sentinel pushed into the stream queues on disconnect so a blocked
+# get_users / drain_history fails fast instead of returning a partial
+# result that looks like a completed stream.
+_STREAM_ABORT = object()
+
+
 class WyzeScaleClient:
     """One BLE session with the scale."""
 
@@ -63,8 +69,9 @@ class WyzeScaleClient:
         self._on_message = on_message
         self._kex_future: asyncio.Future[int] | None = None
         self._ack_futures: dict[int, asyncio.Future[int]] = {}
-        self._user_list_queue: asyncio.Queue[Message] = asyncio.Queue()
-        self._history_queue: asyncio.Queue[Measurement | None] = asyncio.Queue()
+        # Carry Message / Measurement / None / _STREAM_ABORT (untyped).
+        self._user_list_queue: asyncio.Queue = asyncio.Queue()
+        self._history_queue: asyncio.Queue = asyncio.Queue()
         self._cmd_lock = asyncio.Lock()
 
     @property
@@ -122,6 +129,11 @@ class WyzeScaleClient:
                 fut.set_exception(exc)
                 fut.exception()
         self._ack_futures.clear()
+        # Wake any blocked stream reader so it fails instead of waiting out
+        # the gap timeout and mistaking a dropped connection for a finished
+        # stream.
+        self._user_list_queue.put_nowait(_STREAM_ABORT)
+        self._history_queue.put_nowait(_STREAM_ABORT)
 
     # ------------------------------------------------------------------
     # Handshake
@@ -185,28 +197,45 @@ class WyzeScaleClient:
             return
         self._dispatch(msg)
 
+    @staticmethod
+    def _safe_callback(cb: Callable | None, arg) -> None:
+        """Invoke a consumer callback without letting it break the notify path."""
+        if cb is None:
+            return
+        try:
+            cb(arg)
+        except Exception:  # noqa: BLE001 - a buggy consumer must not kill notifications
+            _LOGGER.exception("Error in Wyze scale callback")
+
     def _dispatch(self, msg: Message) -> None:
         _LOGGER.debug("<- cmd=0x%02x status=%s len=%d", msg.cmd, msg.status, len(msg.raw))
-        if self._on_message is not None:
-            self._on_message(msg)
+        self._safe_callback(self._on_message, msg)
         if msg.cmd == CMD_CUR_WEIGHT_DATA:
             try:
                 measurement = protocol.parse_live_weight(msg)
             except ProtocolError as err:
                 _LOGGER.debug("Bad live weight message: %s", err)
                 return
-            if self._on_live_weight is not None:
-                self._on_live_weight(measurement)
+            self._safe_callback(self._on_live_weight, measurement)
             return
         if msg.cmd == CMD_HISTORY_WEIGHT_DATA:
-            self._history_queue.put_nowait(protocol.parse_history_record(msg))
+            try:
+                record = protocol.parse_history_record(msg)
+            except ProtocolError as err:
+                # Truncated/corrupt frame: drop it rather than letting the
+                # drain mistake it for end-of-stream and strand real records.
+                _LOGGER.debug("Bad history record: %s", err)
+                return
+            self._history_queue.put_nowait(record)
             return
         if msg.cmd == CMD_HEART_RESULT:
             if self._on_heart_result is not None:
                 try:
-                    self._on_heart_result(protocol.parse_heart_result(msg))
+                    result = protocol.parse_heart_result(msg)
                 except ProtocolError as err:
                     _LOGGER.debug("Bad heart result message: %s", err)
+                    return
+                self._safe_callback(self._on_heart_result, result)
             return
         if msg.cmd == CMD_USER_LIST_NEW:
             self._user_list_queue.put_nowait(msg)
@@ -224,16 +253,20 @@ class WyzeScaleClient:
 
     async def _send_expect_ack(self, payload: bytes, cmd: int) -> None:
         async with self._cmd_lock:
-            loop = asyncio.get_running_loop()
-            fut: asyncio.Future[int] = loop.create_future()
-            self._ack_futures[cmd] = fut
-            try:
-                await self._send(payload)
-                status = await asyncio.wait_for(fut, REPLY_TIMEOUT)
-            except asyncio.TimeoutError as err:
-                raise WyzeScaleError(f"timeout waiting for reply to 0x{cmd:02x}") from err
-            finally:
-                self._ack_futures.pop(cmd, None)
+            await self._send_expect_ack_locked(payload, cmd)
+
+    async def _send_expect_ack_locked(self, payload: bytes, cmd: int) -> None:
+        """Send a command and await its ack. Caller must hold _cmd_lock."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[int] = loop.create_future()
+        self._ack_futures[cmd] = fut
+        try:
+            await self._send(payload)
+            status = await asyncio.wait_for(fut, REPLY_TIMEOUT)
+        except asyncio.TimeoutError as err:
+            raise WyzeScaleError(f"timeout waiting for reply to 0x{cmd:02x}") from err
+        finally:
+            self._ack_futures.pop(cmd, None)
         if status != 0:
             raise WyzeScaleError(f"command 0x{cmd:02x} failed with status {status}")
 
@@ -246,7 +279,8 @@ class WyzeScaleClient:
 
         For protocol exploration; replies (if any) arrive via on_message.
         """
-        await self._send(protocol.build_request(cmd, args))
+        async with self._cmd_lock:
+            await self._send(protocol.build_request(cmd, args))
 
     async def enter_heart_mode(self) -> None:
         """Put the scale into heart-rate measurement mode (fire-and-forget).
@@ -254,11 +288,13 @@ class WyzeScaleClient:
         HEART_RESULT frames arrive via the on_heart_result callback. The
         official app re-sends this periodically while measuring.
         """
-        await self._send(protocol.build_heart_mode())
+        async with self._cmd_lock:
+            await self._send(protocol.build_heart_mode())
 
     async def enter_weight_mode(self) -> None:
         """Return the scale to normal weighing mode."""
-        await self._send(protocol.build_weight_mode())
+        async with self._cmd_lock:
+            await self._send(protocol.build_weight_mode())
 
     async def sync_time(self, timestamp: int) -> None:
         await self._send_expect_ack(protocol.build_sync_time(timestamp), protocol.CMD_SYNC_TIME)
@@ -271,9 +307,8 @@ class WyzeScaleClient:
 
     async def get_users(self) -> list[UserRecord]:
         """Request the stored user list, collecting multi-message replies."""
-        while not self._user_list_queue.empty():
-            self._user_list_queue.get_nowait()
         async with self._cmd_lock:
+            self._drain_queue(self._user_list_queue)
             await self._send(protocol.build_user_list())
             users: list[UserRecord] = []
             while True:
@@ -283,10 +318,17 @@ class WyzeScaleClient:
                     )
                 except asyncio.TimeoutError:
                     break
+                if msg is _STREAM_ABORT:
+                    raise WyzeScaleError("disconnected while reading user list")
                 users.extend(protocol.parse_user_list(msg))
             if not users:
                 _LOGGER.debug("User list empty or no reply")
             return users
+
+    @staticmethod
+    def _drain_queue(queue: asyncio.Queue) -> None:
+        while not queue.empty():
+            queue.get_nowait()
 
     async def select_user(self, record: UserRecord) -> None:
         await self._send_expect_ack(
@@ -314,23 +356,30 @@ class WyzeScaleClient:
         handed to ``on_record`` before its ack is sent, so even if the
         connection drops mid-drain no acknowledged record is lost - callers
         must persist records from the callback, not just the return value.
+
+        Raises WyzeScaleError if the connection drops mid-drain, so a partial
+        drain is never mistaken for a completed one.
         """
-        while not self._history_queue.empty():
-            self._history_queue.get_nowait()
-        await self.select_user(record)
         measurements: list[Measurement] = []
-        while True:
-            try:
-                measurement = await asyncio.wait_for(
-                    self._history_queue.get(), STREAM_GAP_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                break
-            if measurement is None:
-                # Status != valid: treat as end of stream, do not ack.
-                break
-            measurements.append(measurement)
-            if on_record is not None:
-                on_record(measurement)
-            await self._send(protocol.build_history_ack())
+        async with self._cmd_lock:
+            self._drain_queue(self._history_queue)
+            await self._send_expect_ack_locked(
+                protocol.build_current_user(record), protocol.CMD_CURRENT_USER_NEW
+            )
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        self._history_queue.get(), STREAM_GAP_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if item is _STREAM_ABORT:
+                    raise WyzeScaleError("disconnected while draining history")
+                if item is None:
+                    # Status != valid: end of stream, do not ack.
+                    break
+                measurements.append(item)
+                if on_record is not None:
+                    on_record(item)
+                await self._send(protocol.build_history_ack())
         return measurements

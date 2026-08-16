@@ -79,7 +79,26 @@ class UserProfile:
         )
 
     def matches_scale(self, other: "UserProfile") -> bool:
-        return self.scale_fields() == other.scale_fields()
+        return fields_match(self.scale_fields(), other.scale_fields())
+
+
+# kg x100 units (~0.03 kg). Absorbs the rounding when a weight is shown and
+# re-entered in pounds, so an unchanged US-customary profile doesn't look
+# like a change and trigger a needless push to the scale.
+WEIGHT_MATCH_TOLERANCE = 3
+
+
+def fields_match(a, b) -> bool:
+    """Compare two scale_fields sequences: profile fields exact, weight close.
+
+    The weight (last element) is an approximate matching value, so it's
+    compared within WEIGHT_MATCH_TOLERANCE rather than exactly.
+    """
+    a = list(a)
+    b = list(b)
+    if not a or len(a) != len(b):
+        return False
+    return a[:-1] == b[:-1] and abs(a[-1] - b[-1]) <= WEIGHT_MATCH_TOLERANCE
 
 
 def default_name(user_id: str) -> str:

@@ -50,6 +50,11 @@ on the next sync).
 | Poll now | Button - connect and sync immediately |
 | Battery | Scale battery level *(diagnostic)* |
 | Last sync | When the last successful sync finished *(diagnostic)* |
+| Signal strength | Bluetooth RSSI of the scale *(diagnostic, disabled by default)* |
+| Bluetooth source | Which adapter or proxy last saw the scale *(diagnostic, disabled by default)* |
+
+The last two are hidden by default; enable them from the entity settings if
+you want to check signal quality or which Bluetooth proxy is in range.
 
 ### Scale user (one sub-device per person)
 

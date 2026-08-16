@@ -51,7 +51,7 @@ from .const import (
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
 )
-from .users import UserProfile, merge_import_name, reconcile
+from .users import UserProfile, fields_match, merge_import_name, reconcile
 from .wyze_ble import (
     Measurement,
     UserRecord,
@@ -259,6 +259,9 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         self._tombstones: set[str] = set()  # user_ids deleted in HA
         self._pushed: dict[str, list[int]] = {}  # user_id -> scale_fields
         self._known_subentries: set[str] = set()  # last-seen subentry user_ids
+        # Per-session scratch (reset each sync).
+        self._deleted_this_session: set[str] = set()
+        self._pending_imports: list[UserProfile] = []
 
     @property
     def address(self) -> str:
@@ -322,7 +325,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         if self._tombstones:
             return True
         for user_id, (_sid, profile) in self._subentry_profiles().items():
-            if self._pushed.get(user_id) != list(profile.scale_fields()):
+            if not fields_match(self._pushed.get(user_id, []), profile.scale_fields()):
                 return True
         return False
 
@@ -418,6 +421,8 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             return self._scale_data
 
         self._last_live = None
+        self._deleted_this_session = set()
+        self._pending_imports = []
         client = WyzeScaleClient(on_live_weight=self._handle_live_weight)
         try:
             await client.connect(ble_device)
@@ -445,8 +450,9 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                 _LOGGER.warning("User reconciliation aborted: %s", err)
 
             for record in users:
-                if record.user_id_hex in self._tombstones:
-                    continue  # deleted this session; don't drain its history
+                # Skip users we just deleted from the scale this session.
+                if record.user_id_hex in self._deleted_this_session:
+                    continue
                 try:
                     # Records are recorded (and queued for disk) via the
                     # callback BEFORE each ack deletes them from the scale.
@@ -457,12 +463,13 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                         ),
                     )
                 except WyzeScaleError as err:
+                    # One user's drain failing shouldn't strand the rest.
                     _LOGGER.warning(
-                        "History sync for user %s… aborted: %s",
+                        "History sync for user %s… failed: %s",
                         record.user_id_hex[:8],
                         err,
                     )
-                    break
+                    continue
                 if history:
                     _LOGGER.debug(
                         "Synced %d history record(s) for user %s…",
@@ -479,7 +486,12 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             raise UpdateFailed(f"Sync with scale failed: {err}") from err
         finally:
             await client.disconnect()
-            await self._async_save()
+            # Don't clobber a freshly-reloaded coordinator's store: if we're
+            # being torn down (e.g. an import or options change triggered a
+            # reload), the new coordinator owns the state now.
+            if not self._shutdown_requested:
+                await self._async_save()
+                self._apply_pending_imports()
 
     async def _async_linger_for_live(self, client: WyzeScaleClient) -> None:
         """Stay connected while live weight frames are streaming."""
@@ -508,8 +520,10 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         """Make the scale's users agree with the HA config subentries.
 
         Runs inside a sync session with an open connection. Pushes HA-side
-        creates/updates/deletes to the scale, and imports scale-side users
-        (e.g. created in the Wyze app) as new subentries.
+        creates/updates/deletes to the scale, and stages scale-side users
+        (e.g. created in the Wyze app) for import as new subentries. The
+        actual subentry creation is deferred to _apply_pending_imports (run
+        after the session's store save) to avoid a reload-vs-save race.
         """
         scale_users = {r.user_id_hex: _profile_from_record(r) for r in records}
         subentries = {
@@ -522,6 +536,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
 
         for user_id in plan.to_delete:
             await client.delete_user(bytes.fromhex(user_id))
+            self._deleted_this_session.add(user_id)
             self._tombstones.discard(user_id)
             self._pushed.pop(user_id, None)
             self._scale_data.users.pop(user_id, None)
@@ -545,30 +560,44 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             self._merge_profile(record)
             _LOGGER.info("Updated scale user %s on the scale", profile.user_id[:8])
 
-        if plan.to_import:
-            self._import_users(plan.to_import)
+        for profile in plan.to_import:
+            named = merge_import_name(profile)
+            self._pending_imports.append(named)
+            # Already on the scale, so record it as pushed now so the store
+            # save reflects it before the import triggers a reload.
+            self._pushed[named.user_id] = list(named.scale_fields())
 
         self._known_subentries = set(subentries) | {
             p.user_id for p in plan.to_import
         }
 
-    def _import_users(self, profiles: list[UserProfile]) -> None:
-        """Create HA subentries for users discovered on the scale."""
-        for profile in profiles:
-            named = merge_import_name(profile)
+    def _apply_pending_imports(self) -> None:
+        """Create HA subentries for users discovered on the scale.
+
+        Called after the session's store save. Each async_add_subentry fires
+        the entry update listener, which reloads the entry (serialized on its
+        setup_lock) and creates the new subentry's entities on a task, after
+        this sync. The store is already saved, so the reloaded coordinator
+        reads current data.
+        """
+        for profile in self._pending_imports:
             subentry = ConfigSubentry(
-                data=MappingProxyType(named.to_subentry_data()),
+                data=MappingProxyType(profile.to_subentry_data()),
                 subentry_type=SUBENTRY_TYPE_USER,
-                title=named.name,
-                unique_id=named.user_id,
+                title=profile.name,
+                unique_id=profile.user_id,
             )
-            self.hass.config_entries.async_add_subentry(self.config_entry, subentry)
-            # Already on the scale, so record it as pushed.
-            self._pushed[named.user_id] = list(named.scale_fields())
-            _LOGGER.info("Imported scale user %s as a device", named.user_id[:8])
-        # async_add_subentry fires the entry update listener, which reloads
-        # the entry (serialized on its setup_lock) and creates the new
-        # subentry's entities. The reload runs as a task, after this sync.
+            try:
+                self.hass.config_entries.async_add_subentry(
+                    self.config_entry, subentry
+                )
+            except Exception as err:  # noqa: BLE001 - e.g. AbortFlow on dup id
+                _LOGGER.warning(
+                    "Could not import scale user %s: %s", profile.user_id[:8], err
+                )
+                continue
+            _LOGGER.info("Imported scale user %s as a device", profile.user_id[:8])
+        self._pending_imports = []
 
     # ------------------------------------------------------------------
     # Data handling

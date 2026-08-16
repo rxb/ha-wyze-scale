@@ -80,6 +80,19 @@ def test_update_on_profile_drift():
     assert not plan.to_import and not plan.to_create
 
 
+def test_weight_tolerance_absorbs_lb_rounding():
+    uid = "cc" * 16
+    # A user stored as 80.00 kg, shown and re-entered in pounds (0.1 lb step).
+    stored = _p(uid, weight_kg=80.00)
+    shown_lb = round(kg_to_lb(80.00), 1)
+    reentered = _p(uid, weight_kg=lb_to_kg(shown_lb))
+    # The kg differs slightly, but it must NOT count as a scale change.
+    assert stored.matches_scale(reentered)
+    assert reentered.matches_scale(stored)
+    # A real change (0.5 kg) still registers.
+    assert not stored.matches_scale(_p(uid, weight_kg=80.5))
+
+
 def test_no_update_when_only_name_differs():
     uid = "cc" * 16
     scale = {uid: _p(uid, name="")}

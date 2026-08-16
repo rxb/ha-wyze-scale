@@ -12,13 +12,15 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.components import bluetooth
 from homeassistant.const import (
     PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfMass,
 )
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -203,6 +205,12 @@ async def async_setup_entry(
     async_add_entities(
         WyzeScaleSensor(coordinator, description) for description in SCALE_SENSORS
     )
+    async_add_entities(
+        [
+            WyzeScaleRSSISensor(coordinator),
+            WyzeScaleBluetoothSourceSensor(coordinator),
+        ]
+    )
 
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type != SUBENTRY_TYPE_USER:
@@ -257,6 +265,92 @@ class WyzeScaleSensor(WyzeScaleBaseEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class WyzeScaleBluetoothDiagnostic(SensorEntity):
+    """Base for scale-level Bluetooth diagnostics (disabled by default).
+
+    Values come from the latest advertisement the HA bluetooth manager has
+    seen for the scale, refreshed on each advertisement callback. Not tied
+    to the sync coordinator, so it stays current even between syncs.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_should_poll = False
+
+    def __init__(self, coordinator: WyzeScaleCoordinator) -> None:
+        self._address = coordinator.address
+        self._attr_device_info = scale_device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            bluetooth.async_register_callback(
+                self.hass,
+                self._async_on_advertisement,
+                # connectable=False to match _last_service_info's query, so
+                # the callback and the value read from the same history.
+                bluetooth.BluetoothCallbackMatcher(
+                    address=self._address, connectable=False
+                ),
+                bluetooth.BluetoothScanningMode.PASSIVE,
+            )
+        )
+
+    @callback
+    def _async_on_advertisement(
+        self,
+        _service_info: bluetooth.BluetoothServiceInfoBleak,
+        _change: bluetooth.BluetoothChange,
+    ) -> None:
+        self.async_write_ha_state()
+
+    def _last_service_info(self):
+        return bluetooth.async_last_service_info(
+            self.hass, self._address, connectable=False
+        )
+
+
+class WyzeScaleRSSISensor(WyzeScaleBluetoothDiagnostic):
+    """Bluetooth signal strength of the scale's advertisements."""
+
+    _attr_name = "Signal strength"
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: WyzeScaleCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}-rssi"
+
+    @property
+    def native_value(self) -> int | None:
+        info = self._last_service_info()
+        return info.rssi if info else None
+
+
+class WyzeScaleBluetoothSourceSensor(WyzeScaleBluetoothDiagnostic):
+    """Which adapter or Bluetooth proxy last saw the scale."""
+
+    _attr_name = "Bluetooth source"
+    _attr_icon = "mdi:bluetooth"
+
+    def __init__(self, coordinator: WyzeScaleCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}-bt_source"
+
+    @property
+    def native_value(self) -> str | None:
+        info = self._last_service_info()
+        if info is None:
+            return None
+        scanner = bluetooth.async_scanner_by_source(self.hass, info.source)
+        return scanner.name if scanner else info.source
 
 
 class WyzeScaleUserSensor(WyzeScaleBaseEntity, SensorEntity):

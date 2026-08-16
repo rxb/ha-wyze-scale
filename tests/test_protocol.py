@@ -237,10 +237,15 @@ def test_parse_history_record():
     assert m.weight_kg == pytest.approx(68.25)
     assert m.body_fat_pct == pytest.approx(30.0)
 
-    # invalid status -> None
+    # invalid status -> None (valid end-of-stream marker)
     body[0] = 0
     msg = _make_message(protocol.CMD_HISTORY_WEIGHT_DATA, bytes(body))
     assert protocol.parse_history_record(msg) is None
+
+    # truncated frame -> ProtocolError (not silently treated as end-of-stream)
+    short = _make_message(protocol.CMD_HISTORY_WEIGHT_DATA, b"\x01\x00\x00")
+    with pytest.raises(protocol.ProtocolError):
+        protocol.parse_history_record(short)
 
 
 def test_heart_mode_and_result():

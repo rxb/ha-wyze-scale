@@ -373,9 +373,16 @@ def parse_live_weight(msg: Message) -> Measurement:
 
 
 def parse_history_record(msg: Message) -> Measurement | None:
-    """Parse a HISTORY_WEIGHT_DATA (0x09) message; None if status != valid."""
+    """Parse a HISTORY_WEIGHT_DATA (0x09) message.
+
+    Returns None only for a valid end-of-stream marker (status != 1). Raises
+    ProtocolError on a truncated/corrupt frame so callers don't mistake it
+    for end-of-stream.
+    """
     raw = msg.raw
-    if msg.status != 1 or len(raw) < 53:
+    if len(raw) < 53:
+        raise ProtocolError(f"history record too short: {raw.hex()}")
+    if msg.status != 1:
         return None
     timestamp = struct.unpack_from("<I", raw, 7)[0]
     fields = _parse_body(raw, 11)
