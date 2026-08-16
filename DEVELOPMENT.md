@@ -14,7 +14,7 @@ custom_components/wyze_scale/
 ├── users.py           # pure profile model + scale<->HA reconcile logic
 ├── sensor.py          # scale sensors + per-subentry user sensors
 ├── button.py          # Poll now
-├── brand/             # icon.png / dark_icon.png (+@2x); local brand images
+├── brand/             # icon.png (+@2x); local brand images (transparent)
 └── wyze_ble/          # standalone protocol library (no HA imports)
     ├── xxtea.py       # XXTEA cipher, 8-byte-block ECB variant
     ├── protocol.py    # framing, key exchange, message build/parse
@@ -26,14 +26,13 @@ tests/test_users.py    # reconciliation unit tests
 
 ## Brand images
 
-`custom_components/wyze_scale/brand/` holds the integration icons
-(`icon.png` + `dark_icon.png`, each with an `@2x` variant, 256/512 px). Home
-Assistant's [brands proxy](https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/)
+`custom_components/wyze_scale/brand/` holds the integration icon (`icon.png`
++ `icon@2x.png`, 256/512 px, transparent background). Home Assistant's
+[brands proxy](https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/)
 serves local `brand/` images directly and prefers them over the CDN, so no
-submission to the `home-assistant/brands` repo is needed. `icon.png` is the
-scale on transparent (for light backgrounds); `dark_icon.png` puts it on a
-light rounded tile so it stays legible on dark backgrounds. Derived from
-Wyze's official Scale X product image.
+submission to the `home-assistant/brands` repo is needed. Derived from Wyze's
+official Scale X product image, trimmed and centered on transparency; HA
+falls back to `icon.png` for dark mode (no separate `dark_icon`).
 
 ## Scale users as config subentries
 
