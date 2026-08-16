@@ -12,6 +12,8 @@ from . import WyzeScaleConfigEntry
 from .coordinator import WyzeScaleCoordinator
 from .sensor import scale_device_info
 
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -29,8 +31,7 @@ class WyzeScalePollNowButton(CoordinatorEntity[WyzeScaleCoordinator], ButtonEnti
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Poll now"
-    _attr_icon = "mdi:bluetooth-connect"
+    _attr_translation_key = "poll_now"
 
     def __init__(self, coordinator: WyzeScaleCoordinator) -> None:
         super().__init__(coordinator)

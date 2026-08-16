@@ -9,7 +9,7 @@
       "local_name": "WL_SC3"
     }
   ],
-  "codeowners": [],
+  "codeowners": ["@Bo-Louvier"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/Bo-Louvier/ha-wyze-scale",

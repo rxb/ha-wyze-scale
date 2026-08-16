@@ -95,5 +95,59 @@
         "female": "Female"
       }
     }
+  },
+  "entity": {
+    "button": {
+      "poll_now": {
+        "name": "Poll now"
+      }
+    },
+    "sensor": {
+      "last_sync": {
+        "name": "Last sync"
+      },
+      "bluetooth_source": {
+        "name": "Bluetooth source"
+      },
+      "weight": {
+        "name": "Weight"
+      },
+      "bmi": {
+        "name": "BMI"
+      },
+      "body_fat": {
+        "name": "Body fat"
+      },
+      "muscle_mass": {
+        "name": "Muscle mass"
+      },
+      "bone_mass": {
+        "name": "Bone mass"
+      },
+      "body_water": {
+        "name": "Body water"
+      },
+      "protein": {
+        "name": "Protein"
+      },
+      "lean_body_mass": {
+        "name": "Lean body mass"
+      },
+      "visceral_fat": {
+        "name": "Visceral fat level"
+      },
+      "bmr": {
+        "name": "Basal metabolic rate"
+      },
+      "body_age": {
+        "name": "Metabolic age"
+      },
+      "impedance": {
+        "name": "Impedance"
+      },
+      "last_measurement": {
+        "name": "Last measurement"
+      }
+    }
   }
 }

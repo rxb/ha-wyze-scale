@@ -1,0 +1,44 @@
+{
+  "entity": {
+    "button": {
+      "poll_now": {
+        "default": "mdi:bluetooth-connect"
+      }
+    },
+    "sensor": {
+      "bluetooth_source": {
+        "default": "mdi:bluetooth"
+      },
+      "bmi": {
+        "default": "mdi:human"
+      },
+      "body_fat": {
+        "default": "mdi:percent"
+      },
+      "muscle_mass": {
+        "default": "mdi:arm-flex"
+      },
+      "bone_mass": {
+        "default": "mdi:bone"
+      },
+      "body_water": {
+        "default": "mdi:water-percent"
+      },
+      "protein": {
+        "default": "mdi:food-drumstick"
+      },
+      "visceral_fat": {
+        "default": "mdi:stomach"
+      },
+      "bmr": {
+        "default": "mdi:fire"
+      },
+      "body_age": {
+        "default": "mdi:calendar-account"
+      },
+      "impedance": {
+        "default": "mdi:omega"
+      }
+    }
+  }
+}

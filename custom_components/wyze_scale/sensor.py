@@ -30,6 +30,9 @@ from .const import DOMAIN, SUBENTRY_TYPE_USER
 from .coordinator import ScaleData, UserData, WyzeScaleCoordinator
 from .users import UserProfile
 
+# All entities are fed by the coordinator / advertisement callbacks.
+PARALLEL_UPDATES = 0
+
 
 @dataclass(frozen=True, kw_only=True)
 class WyzeScaleSensorDescription(SensorEntityDescription):
@@ -48,7 +51,6 @@ class WyzeScaleUserSensorDescription(SensorEntityDescription):
 SCALE_SENSORS: tuple[WyzeScaleSensorDescription, ...] = (
     WyzeScaleSensorDescription(
         key="battery",
-        name="Battery",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -57,7 +59,7 @@ SCALE_SENSORS: tuple[WyzeScaleSensorDescription, ...] = (
     ),
     WyzeScaleSensorDescription(
         key="last_sync",
-        name="Last sync",
+        translation_key="last_sync",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.last_sync,
@@ -79,7 +81,7 @@ def _measurement(
 USER_SENSORS: tuple[WyzeScaleUserSensorDescription, ...] = (
     WyzeScaleUserSensorDescription(
         key="weight",
-        name="Weight",
+        translation_key="weight",
         device_class=SensorDeviceClass.WEIGHT,
         native_unit_of_measurement=UnitOfMass.KILOGRAMS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -88,62 +90,56 @@ USER_SENSORS: tuple[WyzeScaleUserSensorDescription, ...] = (
     ),
     WyzeScaleUserSensorDescription(
         key="bmi",
-        name="BMI",
+        translation_key="bmi",
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:human",
         value_fn=_measurement("bmi"),
     ),
     WyzeScaleUserSensorDescription(
         key="body_fat",
-        name="Body fat",
+        translation_key="body_fat",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:percent",
         value_fn=_measurement("body_fat_pct"),
     ),
     WyzeScaleUserSensorDescription(
         key="muscle_mass",
-        name="Muscle mass",
+        translation_key="muscle_mass",
         device_class=SensorDeviceClass.WEIGHT,
         native_unit_of_measurement=UnitOfMass.KILOGRAMS,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:arm-flex",
         value_fn=_measurement("muscle_mass_kg"),
     ),
     WyzeScaleUserSensorDescription(
         key="bone_mass",
-        name="Bone mass",
+        translation_key="bone_mass",
         device_class=SensorDeviceClass.WEIGHT,
         native_unit_of_measurement=UnitOfMass.KILOGRAMS,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:bone",
         value_fn=_measurement("bone_mass_kg"),
     ),
     WyzeScaleUserSensorDescription(
         key="body_water",
-        name="Body water",
+        translation_key="body_water",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:water-percent",
         value_fn=_measurement("water_pct"),
     ),
     WyzeScaleUserSensorDescription(
         key="protein",
-        name="Protein",
+        translation_key="protein",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:food-drumstick",
         value_fn=_measurement("protein_pct"),
     ),
     WyzeScaleUserSensorDescription(
         key="lean_body_mass",
-        name="Lean body mass",
+        translation_key="lean_body_mass",
         device_class=SensorDeviceClass.WEIGHT,
         native_unit_of_measurement=UnitOfMass.KILOGRAMS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -152,36 +148,32 @@ USER_SENSORS: tuple[WyzeScaleUserSensorDescription, ...] = (
     ),
     WyzeScaleUserSensorDescription(
         key="visceral_fat",
-        name="Visceral fat level",
+        translation_key="visceral_fat",
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:stomach",
         value_fn=_measurement("visceral_fat_level"),
     ),
     WyzeScaleUserSensorDescription(
         key="bmr",
-        name="Basal metabolic rate",
+        translation_key="bmr",
         native_unit_of_measurement="kcal",
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:fire",
         value_fn=_measurement("bmr"),
     ),
     WyzeScaleUserSensorDescription(
         key="body_age",
-        name="Metabolic age",
-        icon="mdi:calendar-account",
+        translation_key="body_age",
         value_fn=_measurement("body_age"),
     ),
     WyzeScaleUserSensorDescription(
         key="impedance",
-        name="Impedance",
+        translation_key="impedance",
         native_unit_of_measurement="Ω",
         entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:omega",
         value_fn=_measurement("impedance"),
     ),
     WyzeScaleUserSensorDescription(
         key="last_measurement",
-        name="Last measurement",
+        translation_key="last_measurement",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_measurement("time"),
     ),
@@ -319,7 +311,6 @@ class WyzeScaleBluetoothDiagnostic(SensorEntity):
 class WyzeScaleRSSISensor(WyzeScaleBluetoothDiagnostic):
     """Bluetooth signal strength of the scale's advertisements."""
 
-    _attr_name = "Signal strength"
     _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
     _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -337,8 +328,7 @@ class WyzeScaleRSSISensor(WyzeScaleBluetoothDiagnostic):
 class WyzeScaleBluetoothSourceSensor(WyzeScaleBluetoothDiagnostic):
     """Which adapter or Bluetooth proxy last saw the scale."""
 
-    _attr_name = "Bluetooth source"
-    _attr_icon = "mdi:bluetooth"
+    _attr_translation_key = "bluetooth_source"
 
     def __init__(self, coordinator: WyzeScaleCoordinator) -> None:
         super().__init__(coordinator)

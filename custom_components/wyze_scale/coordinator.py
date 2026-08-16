@@ -329,6 +329,10 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                 return True
         return False
 
+    def diagnostics_data(self) -> dict[str, Any]:
+        """Snapshot of persisted state for the diagnostics download."""
+        return self._data_for_store()
+
     def _data_for_store(self) -> dict[str, Any]:
         return {
             "scale_data": self._scale_data.as_dict(),

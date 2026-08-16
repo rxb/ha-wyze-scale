@@ -172,20 +172,23 @@ python3 -m venv .venv && .venv/bin/pip install bleak bleak-retry-connector
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest xxtea
+.venv/bin/pip install pytest xxtea pytest-homeassistant-custom-component \
+    bleak bleak-retry-connector
 .venv/bin/python -m pytest tests/
 ```
 
 `tests/test_protocol.py` covers the XXTEA cipher (including a cross-check
 against the reference `xxtea` package), key derivation, DH exchange, frame
 round-trips, request layouts, user records, and live/history message parsing
-with the verified field scalings (synthetic values).
+with the verified field scalings (synthetic values). `tests/test_users.py`
+covers the pure profile/reconciliation logic.
 
-For import-checking the HA-facing modules against a real Home Assistant,
-install `homeassistant` (plus its Bluetooth deps: `aiousbwatcher`,
-`habluetooth`, `bluetooth-adapters`, `bluetooth-auto-recovery`,
-`bluetooth-data-tools`, `pyserial`, `pyudev`) into the venv and import
-`custom_components.wyze_scale.*` from the repo root.
+The Home Assistant-level tests use
+[`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component)
+(which pins a full Home Assistant and mocked Bluetooth stack):
+`tests/test_config_flow.py` (discovery, manual setup, options, user
+subentries), `tests/test_init.py` (setup/unload, diagnostics), and
+`tests/test_coordinator.py` (a sync session against a fake BLE client).
 
 ## Hardware verification status
 
