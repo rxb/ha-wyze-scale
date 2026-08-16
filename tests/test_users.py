@@ -3,13 +3,19 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(
     0, str(Path(__file__).parent.parent / "custom_components" / "wyze_scale")
 )
 
 from users import (  # noqa: E402
     UserProfile,
+    cm_to_ft_in,
     default_name,
+    ft_in_to_cm,
+    kg_to_lb,
+    lb_to_kg,
     merge_import_name,
     reconcile,
 )
@@ -106,6 +112,21 @@ def test_merge_import_name():
     # existing name preserved
     keep = _p("ff" * 16, name="Keep")
     assert merge_import_name(keep).name == "Keep"
+
+
+def test_weight_conversions():
+    assert lb_to_kg(kg_to_lb(80.0)) == pytest.approx(80.0)
+    assert kg_to_lb(80.0) == pytest.approx(176.37, abs=0.01)
+    assert lb_to_kg(180.0) == pytest.approx(81.6466, abs=0.001)
+
+
+def test_height_conversions():
+    assert cm_to_ft_in(178) == (5, 10)  # 70.08 in -> 5'10"
+    assert cm_to_ft_in(152.4) == (5, 0)
+    assert ft_in_to_cm(5, 10) == 178  # 70 in -> 177.8 -> 178
+    assert ft_in_to_cm(6, 0) == 183
+    # inches carry into feet at 12
+    assert cm_to_ft_in(182.9)[1] < 12
 
 
 def test_steady_state_is_empty():

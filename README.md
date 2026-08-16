@@ -97,6 +97,10 @@ device page (**Settings → Devices & Services → Wyze Scale → the scale**):
 Because each scale is its own device, there's no ambiguity when you have
 more than one scale: you manage each scale's users from that scale's page.
 
+Height and weight in the form follow your Home Assistant unit system:
+feet/inches and pounds if you use US customary units, centimeters and
+kilograms otherwise.
+
 Users created in the Wyze app are imported automatically as editable users
 the first time HA sees them. The approximate weight is only used by the
 scale to match a weigh-in to the closest user, so it just needs to be

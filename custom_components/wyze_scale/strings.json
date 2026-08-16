@@ -48,12 +48,16 @@
             "sex": "Sex",
             "age": "Age",
             "height_cm": "Height",
+            "height_ft": "Height (feet)",
+            "height_in": "Height (inches)",
             "weight_kg": "Approximate weight",
+            "weight_lb": "Approximate weight",
             "athlete_mode": "Athlete mode",
             "weight_only": "Weight only (skip body composition)"
           },
           "data_description": {
-            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user."
+            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user.",
+            "weight_lb": "Roughly the person's weight; used only to match weigh-ins to the right user."
           }
         },
         "reconfigure": {
@@ -64,12 +68,16 @@
             "sex": "Sex",
             "age": "Age",
             "height_cm": "Height",
+            "height_ft": "Height (feet)",
+            "height_in": "Height (inches)",
             "weight_kg": "Approximate weight",
+            "weight_lb": "Approximate weight",
             "athlete_mode": "Athlete mode",
             "weight_only": "Weight only (skip body composition)"
           },
           "data_description": {
-            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user."
+            "weight_kg": "Roughly the person's weight; used only to match weigh-ins to the right user.",
+            "weight_lb": "Roughly the person's weight; used only to match weigh-ins to the right user."
           }
         }
       }

@@ -87,6 +87,37 @@ def default_name(user_id: str) -> str:
     return f"Scale user {user_id[:6].upper()}"
 
 
+# ---------------------------------------------------------------------------
+# Unit conversions for localized entry forms.
+#
+# The scale (and UserProfile) always stores height in cm and weight in kg;
+# these convert to/from US-customary units for display in the config UI.
+# ---------------------------------------------------------------------------
+
+_KG_PER_LB = 0.45359237
+_CM_PER_IN = 2.54
+
+
+def kg_to_lb(kg: float) -> float:
+    return kg / _KG_PER_LB
+
+
+def lb_to_kg(lb: float) -> float:
+    return lb * _KG_PER_LB
+
+
+def cm_to_ft_in(cm: float) -> tuple[int, int]:
+    """Convert centimeters to (feet, inches), inches rounded to nearest."""
+    total_in = round(cm / _CM_PER_IN)
+    feet, inches = divmod(total_in, 12)
+    return feet, inches
+
+
+def ft_in_to_cm(feet: int, inches: int) -> int:
+    """Convert (feet, inches) to centimeters, rounded to nearest."""
+    return round((feet * 12 + inches) * _CM_PER_IN)
+
+
 @dataclass
 class ReconcilePlan:
     """What to do to make the scale and HA subentries agree."""

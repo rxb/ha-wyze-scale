@@ -19,6 +19,10 @@ CONF_HEIGHT_CM = "height_cm"
 CONF_WEIGHT_KG = "weight_kg"
 CONF_ATHLETE_MODE = "athlete_mode"
 CONF_WEIGHT_ONLY = "weight_only"
+# US-customary form fields (converted to the canonical cm/kg on save).
+CONF_HEIGHT_FT = "height_ft"
+CONF_HEIGHT_IN = "height_in"
+CONF_WEIGHT_LB = "weight_lb"
 
 SEX_MALE = "male"
 SEX_FEMALE = "female"

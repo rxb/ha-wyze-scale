@@ -16,8 +16,9 @@ from homeassistant.config_entries import (
     OptionsFlow,
     SubentryFlowResult,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -37,10 +38,13 @@ from .const import (
     CONF_DISPLAY_UNIT,
     CONF_FALLBACK_INTERVAL,
     CONF_HEIGHT_CM,
+    CONF_HEIGHT_FT,
+    CONF_HEIGHT_IN,
     CONF_NAME,
     CONF_SEX,
     CONF_SYNC_COOLDOWN,
     CONF_WEIGHT_KG,
+    CONF_WEIGHT_LB,
     CONF_WEIGHT_ONLY,
     DEFAULT_ADVERTISEMENT_TRIGGER,
     DEFAULT_FALLBACK_INTERVAL,
@@ -56,61 +60,131 @@ from .const import (
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
 )
-from .users import UserProfile
+from .users import (
+    UserProfile,
+    cm_to_ft_in,
+    ft_in_to_cm,
+    kg_to_lb,
+    lb_to_kg,
+)
 from .wyze_ble import LOCAL_NAME, SERVICE_UUID
 
 
-def _user_profile_schema(defaults: dict[str, Any]) -> vol.Schema:
-    """Form schema for a scale user's biometric profile."""
-    return vol.Schema(
-        {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, "")): TextSelector(),
-            vol.Required(
-                CONF_SEX, default=defaults.get(CONF_SEX, SEX_FEMALE)
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=[SEX_MALE, SEX_FEMALE],
-                    translation_key="sex",
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Required(CONF_AGE, default=defaults.get(CONF_AGE, 30)): NumberSelector(
-                NumberSelectorConfig(min=1, max=120, step=1, mode=NumberSelectorMode.BOX)
-            ),
-            vol.Required(
-                CONF_HEIGHT_CM, default=defaults.get(CONF_HEIGHT_CM, 170)
-            ): NumberSelector(
-                NumberSelectorConfig(
-                    min=50, max=250, step=1, unit_of_measurement="cm",
-                    mode=NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Required(
-                CONF_WEIGHT_KG, default=defaults.get(CONF_WEIGHT_KG, 70)
-            ): NumberSelector(
-                NumberSelectorConfig(
-                    min=1, max=300, step=0.5, unit_of_measurement="kg",
-                    mode=NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Required(
-                CONF_ATHLETE_MODE, default=defaults.get(CONF_ATHLETE_MODE, False)
-            ): BooleanSelector(),
-            vol.Required(
-                CONF_WEIGHT_ONLY, default=defaults.get(CONF_WEIGHT_ONLY, False)
-            ): BooleanSelector(),
-        }
-    )
+def _use_us_units(hass: HomeAssistant) -> bool:
+    """Whether to present the user form in US-customary units."""
+    return hass.config.units is US_CUSTOMARY_SYSTEM
 
 
-def _profile_from_input(user_id: str, data: dict[str, Any]) -> UserProfile:
+def _form_defaults(profile: UserProfile | None, us: bool) -> dict[str, Any]:
+    """Form field defaults for the given unit system from a canonical profile."""
+    if profile is None:
+        if us:
+            return {CONF_HEIGHT_FT: 5, CONF_HEIGHT_IN: 8, CONF_WEIGHT_LB: 150}
+        return {CONF_HEIGHT_CM: 170, CONF_WEIGHT_KG: 70}
+    defaults: dict[str, Any] = {
+        CONF_NAME: profile.name,
+        CONF_SEX: SEX_MALE if profile.sex_male else SEX_FEMALE,
+        CONF_AGE: profile.age,
+        CONF_ATHLETE_MODE: profile.athlete_mode,
+        CONF_WEIGHT_ONLY: profile.weight_only,
+    }
+    if us:
+        feet, inches = cm_to_ft_in(profile.height_cm)
+        defaults[CONF_HEIGHT_FT] = feet
+        defaults[CONF_HEIGHT_IN] = inches
+        defaults[CONF_WEIGHT_LB] = round(kg_to_lb(profile.weight_kg), 1)
+    else:
+        defaults[CONF_HEIGHT_CM] = profile.height_cm
+        defaults[CONF_WEIGHT_KG] = profile.weight_kg
+    return defaults
+
+
+def _user_profile_schema(defaults: dict[str, Any], us: bool) -> vol.Schema:
+    """Form schema for a scale user's biometric profile.
+
+    Height/weight fields are shown in the user's unit system (ft+in / lb for
+    US-customary, cm / kg otherwise) and converted to canonical cm/kg on save.
+    """
+    schema: dict[Any, Any] = {
+        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, "")): TextSelector(),
+        vol.Required(
+            CONF_SEX, default=defaults.get(CONF_SEX, SEX_FEMALE)
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[SEX_MALE, SEX_FEMALE],
+                translation_key="sex",
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Required(CONF_AGE, default=defaults.get(CONF_AGE, 30)): NumberSelector(
+            NumberSelectorConfig(min=1, max=120, step=1, mode=NumberSelectorMode.BOX)
+        ),
+    }
+    if us:
+        schema[
+            vol.Required(CONF_HEIGHT_FT, default=defaults.get(CONF_HEIGHT_FT, 5))
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=1, max=8, step=1, unit_of_measurement="ft",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        schema[
+            vol.Required(CONF_HEIGHT_IN, default=defaults.get(CONF_HEIGHT_IN, 8))
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=0, max=11, step=1, unit_of_measurement="in",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        schema[
+            vol.Required(CONF_WEIGHT_LB, default=defaults.get(CONF_WEIGHT_LB, 150))
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=2, max=660, step=0.5, unit_of_measurement="lb",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+    else:
+        schema[
+            vol.Required(CONF_HEIGHT_CM, default=defaults.get(CONF_HEIGHT_CM, 170))
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=50, max=250, step=1, unit_of_measurement="cm",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        schema[
+            vol.Required(CONF_WEIGHT_KG, default=defaults.get(CONF_WEIGHT_KG, 70))
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=1, max=300, step=0.5, unit_of_measurement="kg",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+    schema[
+        vol.Required(CONF_ATHLETE_MODE, default=defaults.get(CONF_ATHLETE_MODE, False))
+    ] = BooleanSelector()
+    schema[
+        vol.Required(CONF_WEIGHT_ONLY, default=defaults.get(CONF_WEIGHT_ONLY, False))
+    ] = BooleanSelector()
+    return vol.Schema(schema)
+
+
+def _profile_from_input(user_id: str, data: dict[str, Any], us: bool) -> UserProfile:
+    if us:
+        height_cm = ft_in_to_cm(int(data[CONF_HEIGHT_FT]), int(data[CONF_HEIGHT_IN]))
+        weight_kg = lb_to_kg(float(data[CONF_WEIGHT_LB]))
+    else:
+        height_cm = int(data[CONF_HEIGHT_CM])
+        weight_kg = float(data[CONF_WEIGHT_KG])
     return UserProfile(
         user_id=user_id,
         name=data[CONF_NAME],
         sex_male=data[CONF_SEX] == SEX_MALE,
         age=int(data[CONF_AGE]),
-        height_cm=int(data[CONF_HEIGHT_CM]),
-        weight_kg=float(data[CONF_WEIGHT_KG]),
+        height_cm=height_cm,
+        weight_kg=weight_kg,
         athlete_mode=bool(data[CONF_ATHLETE_MODE]),
         weight_only=bool(data[CONF_WEIGHT_ONLY]),
     )
@@ -123,15 +197,18 @@ class WyzeScaleUserSubentryFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Add a new scale user."""
+        us = _use_us_units(self.hass)
         if user_input is not None:
-            profile = _profile_from_input(UserProfile.new_user_id(), user_input)
+            profile = _profile_from_input(
+                UserProfile.new_user_id(), user_input, us
+            )
             return self.async_create_entry(
                 title=profile.name,
                 data=profile.to_subentry_data(),
                 unique_id=profile.user_id,
             )
         return self.async_show_form(
-            step_id="user", data_schema=_user_profile_schema({})
+            step_id="user", data_schema=_user_profile_schema(_form_defaults(None, us), us)
         )
 
     async def async_step_reconfigure(
@@ -139,9 +216,10 @@ class WyzeScaleUserSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Edit an existing scale user's profile."""
         subentry = self._get_reconfigure_subentry()
+        existing = UserProfile.from_subentry_data(dict(subentry.data))
+        us = _use_us_units(self.hass)
         if user_input is not None:
-            existing = UserProfile.from_subentry_data(dict(subentry.data))
-            profile = _profile_from_input(existing.user_id, user_input)
+            profile = _profile_from_input(existing.user_id, user_input, us)
             return self.async_update_and_abort(
                 self._get_entry(),
                 subentry,
@@ -150,7 +228,7 @@ class WyzeScaleUserSubentryFlow(ConfigSubentryFlow):
             )
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_user_profile_schema(dict(subentry.data)),
+            data_schema=_user_profile_schema(_form_defaults(existing, us), us),
         )
 
 
