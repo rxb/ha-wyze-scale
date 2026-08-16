@@ -3,6 +3,12 @@
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
 [![GitHub Release](https://img.shields.io/github/v/release/Bo-Louvier/ha-wyze-scale)](https://github.com/Bo-Louvier/ha-wyze-scale/releases)
 
+> **Disclaimer:** This is a third-party integration, unaffiliated with Wyze
+> Labs, Inc. and created without their knowledge or approval. "Wyze" and any
+> Wyze logos or product images are used purely for descriptive and
+> identification purposes and do not imply any affiliation with, or
+> authorization, sponsorship, or endorsement by, Wyze.
+
 A custom Home Assistant integration for the **Wyze Scale X** smart scale via
 Bluetooth Low Energy.
 
