@@ -125,10 +125,16 @@ def test_parse_user_list():
     rec = protocol.UserRecord(
         user_id=b"\x11" * 16, weight_raw=7000, sex=0, age=30, height=165
     )
-    msg = _make_message(protocol.CMD_USER_LIST_NEW, b"\x01" + rec.pack() * 2)
+    # The byte at offset 6 is the record count (observed on hardware),
+    # not a 1 = success flag.
+    msg = _make_message(protocol.CMD_USER_LIST_NEW, b"\x02" + rec.pack() * 2)
     users = protocol.parse_user_list(msg)
     assert len(users) == 2
     assert users[0] == protocol.UserRecord.unpack(rec.pack())
+
+    # Empty list
+    msg = _make_message(protocol.CMD_USER_LIST_NEW, b"\x00")
+    assert protocol.parse_user_list(msg) == []
 
 
 def test_parse_live_weight():
@@ -235,6 +241,29 @@ def test_parse_history_record():
     body[0] = 0
     msg = _make_message(protocol.CMD_HISTORY_WEIGHT_DATA, bytes(body))
     assert protocol.parse_history_record(msg) is None
+
+
+def test_heart_mode_and_result():
+    # HEART_MODE / WEIGHT_MODE are no-argument commands (encodeCommonData).
+    hm = protocol.build_heart_mode()
+    assert hm[4] == protocol.CMD_HEART_MODE
+    assert struct.unpack_from("<H", hm, 2)[0] == 2  # cmd + 0xA8, no args
+    assert protocol.build_weight_mode()[4] == protocol.CMD_WEIGHT_MODE
+
+    # HEART_RESULT payload: offset 6 on_scale, 7 measure_state, 8 bpm.
+    msg = _make_message(protocol.CMD_HEART_RESULT, bytes([1, 1, 72]))
+    hr = protocol.parse_heart_result(msg)
+    assert hr.on_scale == 1
+    assert hr.measure_state == 1
+    assert hr.is_complete
+    assert hr.bpm == 72
+    assert hr.heart_rate == 72
+
+    # In-progress: measure_state != 1 -> no final heart rate
+    msg = _make_message(protocol.CMD_HEART_RESULT, bytes([1, 0, 0]))
+    hr = protocol.parse_heart_result(msg)
+    assert not hr.is_complete
+    assert hr.heart_rate is None
 
 
 def test_ack_status():

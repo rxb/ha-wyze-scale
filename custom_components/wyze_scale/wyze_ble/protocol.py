@@ -1,6 +1,6 @@
 """Wyze Scale X (WL_SC3) BLE protocol: frames, key exchange, messages.
 
-Pure functions and dataclasses only — no I/O. See PROTOCOL.md for the wire
+Pure functions and dataclasses only - no I/O. See PROTOCOL.md for the wire
 format this implements.
 """
 
@@ -38,6 +38,9 @@ CMD_UPDATE_USER = 0x0A
 CMD_DEL_USER = 0x0B
 CMD_USER_LIST_NEW = 0x0D
 CMD_CURRENT_USER_NEW = 0x0E
+CMD_HEART_MODE = 0x10
+CMD_HEART_RESULT = 0x11
+CMD_WEIGHT_MODE = 0x12
 
 # Commands whose reply is a 7-byte ack with status 0 = success
 ACK_COMMANDS = frozenset(
@@ -57,6 +60,9 @@ UNIT_KG = 0
 UNIT_LB = 1
 
 MEASURE_STATE_FINAL = 2
+# Heart-rate measurement uses its own state value (1 = complete), distinct
+# from the weight measure_state (2 = settled).
+HEART_STATE_COMPLETE = 1
 
 USER_RECORD_SIZE = 25
 
@@ -217,8 +223,13 @@ class UserRecord:
 
 
 def parse_user_list(msg: Message) -> list[UserRecord]:
-    """Parse one USER_LIST_NEW reply message into user records."""
-    if msg.status != 1:
+    """Parse one USER_LIST_NEW reply message into user records.
+
+    The byte at offset 6 (documented as a status byte) is actually the
+    record count: a scale with two users replies with 2 there, not 1.
+    Parse by length and ignore it, except that 0 means an empty list.
+    """
+    if not msg.status:
         return []
     body = msg.raw[7:]
     records = []
@@ -428,3 +439,42 @@ def build_delete_user(user_id: bytes) -> bytes:
 
 def build_history_ack() -> bytes:
     return build_request(CMD_HISTORY_WEIGHT_DATA, b"\x00")
+
+
+def build_heart_mode() -> bytes:
+    """Enter heart-rate measurement mode (no arguments)."""
+    return build_request(CMD_HEART_MODE)
+
+
+def build_weight_mode() -> bytes:
+    """Return the scale to normal weighing mode (no arguments)."""
+    return build_request(CMD_WEIGHT_MODE)
+
+
+@dataclass
+class HeartResult:
+    """A HEART_RESULT (0x11) reply (decoded from the official app).
+
+    Layout in the reply payload (Message.raw): offset 6 = on-scale/status
+    flag, offset 7 = measure_state (1 = complete), offset 8 = heart rate
+    in bpm.
+    """
+
+    on_scale: int
+    measure_state: int
+    bpm: int
+
+    @property
+    def is_complete(self) -> bool:
+        return self.measure_state == HEART_STATE_COMPLETE
+
+    @property
+    def heart_rate(self) -> int | None:
+        return self.bpm if self.is_complete and self.bpm > 0 else None
+
+
+def parse_heart_result(msg: Message) -> HeartResult:
+    raw = msg.raw
+    if len(raw) < 9:
+        raise ProtocolError(f"heart result message too short: {raw.hex()}")
+    return HeartResult(on_scale=raw[6], measure_state=raw[7], bpm=raw[8])

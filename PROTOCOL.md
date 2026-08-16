@@ -215,12 +215,52 @@ Known command IDs (names from the vendor's terminology):
 | `0x0D` | USER_LIST_NEW | yes |
 | `0x0E` | CURRENT_USER_NEW | yes |
 | `0x0F` | DEL_ALL_USER | no |
-| `0x10` | HEART_MODE | no |
-| `0x11` | HEART_RESULT | no |
-| `0x12` | WEIGHT_MODE | no |
+| `0x10` | HEART_MODE | decoded from app (§5.13) |
+| `0x11` | HEART_RESULT | decoded from app (§5.13) |
+| `0x12` | WEIGHT_MODE | decoded from app (§5.13) |
 
 Commands marked "no" exist in the vendor protocol but their payloads have
 not been reverse-engineered.
+
+### 5.13 Heart rate: HEART_MODE (`0x10`), HEART_RESULT (`0x11`), WEIGHT_MODE (`0x12`)
+
+Decoded from the official Wyze/Hualai app (`com.wyze.pluto`,
+`ICWyzeProtocol`/`WplHeartRateHomeActivity`). The app measures heart rate
+over BLE while you stand on the scale barefoot:
+
+1. **HEART_MODE (`0x10`)** — **no arguments** (length field `0x0002`).
+   Puts the scale into heart-rate measurement mode. The scale replies with
+   a standard acknowledgement; while its status byte is non-zero the app
+   **re-sends HEART_MODE** (roughly every couple of seconds) to keep the
+   mode active.
+
+2. **HEART_RESULT (`0x11`)** — unsolicited, streamed while measuring. After
+   the `cmd`/`0xA8` header the payload is three bytes:
+
+   | Offset | Size | Field |
+   |---|---|---|
+   | 6 | 1 | on-scale/status flag (1 = someone is on the scale) |
+   | 7 | 1 | `measure_state` — **1 = measurement complete** |
+   | 8 | 1 | `heart_rate` — beats per minute |
+
+   The reading is final when `measure_state == 1` and `heart_rate > 0`.
+
+3. **WEIGHT_MODE (`0x12`)** — **no arguments** (length field `0x0002`).
+   Returns the scale to normal weighing mode; the app sends it when leaving
+   the heart-rate screen.
+
+The app also has a separate phone-camera (PPG) heart-rate path, so a given
+model may use either. This BLE flow is transcribed from the app; an earlier
+probe failed only because it wrongly appended a 1-byte argument to `0x10`.
+
+**Partial hardware confirmation (WL_SC3):** sending the correct no-argument
+`HEART_MODE` does switch the scale out of weight mode (the `0x08` weight
+stream stops), so the command is accepted, but no `0x11` result was
+observed in testing. The app precedes measurement by selecting a current
+user (`0x0E`) and drives an interactive on-screen "stand still" session;
+the exact preconditions for the scale to emit `0x11` (current-user
+context, a settled weight, sustained stillness) have not been fully
+reproduced.
 
 ### 5.1 User record (25 bytes)
 
@@ -376,11 +416,12 @@ To create a new user, the reference client first sends CURRENT_USER_NEW
 
 Requests the list of stored users. **No arguments** (length field `0x0002`).
 
-**Reply:** status byte at offset 6 (1 = success), followed by zero or more
-consecutive **25-byte user records** (§5.1). Total message length is
-`7 + 25 × N`; the length field is `3 + 25 × N`. The list may be split across
-**multiple reply messages**; collect replies until none arrives within a
-timeout (~2 s).
+**Reply:** the byte at offset 6 is the **number of user records** (observed:
+2 with two stored users; earlier believed to be a 1 = success flag), followed
+by that many consecutive **25-byte user records** (§5.1). Total message
+length is `7 + 25 × N`; the length field is `3 + 25 × N`. The list may be
+split across **multiple reply messages**; collect replies until none arrives
+within a timeout (~2 s).
 
 ### 5.12 CURRENT_USER_NEW (`0x0E`)
 

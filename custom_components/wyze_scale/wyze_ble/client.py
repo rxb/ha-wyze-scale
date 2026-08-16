@@ -20,10 +20,12 @@ from . import protocol
 from .protocol import (
     CHAR_UUID,
     CMD_CUR_WEIGHT_DATA,
+    CMD_HEART_RESULT,
     CMD_HISTORY_WEIGHT_DATA,
     CMD_USER_LIST_NEW,
     FRAME_ENC_REPLY,
     FRAME_KEX_REPLY,
+    HeartResult,
     Measurement,
     Message,
     ProtocolError,
@@ -48,11 +50,17 @@ class WyzeScaleClient:
     def __init__(
         self,
         on_live_weight: Callable[[Measurement], None] | None = None,
+        on_message: Callable[[Message], None] | None = None,
+        on_heart_result: "Callable[[HeartResult], None] | None" = None,
     ) -> None:
         self._client: BleakClient | None = None
         self._key: bytes | None = None
         self._counter = 0
         self._on_live_weight = on_live_weight
+        self._on_heart_result = on_heart_result
+        # Catch-all observer: called for every decrypted message before
+        # normal dispatch. Used for protocol exploration.
+        self._on_message = on_message
         self._kex_future: asyncio.Future[int] | None = None
         self._ack_futures: dict[int, asyncio.Future[int]] = {}
         self._user_list_queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -80,13 +88,10 @@ class WyzeScaleClient:
             disconnected_callback=self._handle_disconnect,
         )
         try:
-            mtu = self._client.mtu_size
-            if mtu < 64:
-                _LOGGER.warning(
-                    "Negotiated MTU is only %d; frames may be truncated", mtu
-                )
-            else:
-                _LOGGER.debug("Negotiated MTU: %d", mtu)
+            # On BlueZ the negotiated MTU is not exposed and bleak reports
+            # the 23-byte default even though larger notifications arrive
+            # fine, so this is informational only.
+            _LOGGER.debug("Reported MTU: %d", self._client.mtu_size)
             await self._client.start_notify(CHAR_UUID, self._handle_notification)
             await self._handshake()
         except BaseException:
@@ -182,6 +187,8 @@ class WyzeScaleClient:
 
     def _dispatch(self, msg: Message) -> None:
         _LOGGER.debug("<- cmd=0x%02x status=%s len=%d", msg.cmd, msg.status, len(msg.raw))
+        if self._on_message is not None:
+            self._on_message(msg)
         if msg.cmd == CMD_CUR_WEIGHT_DATA:
             try:
                 measurement = protocol.parse_live_weight(msg)
@@ -193,6 +200,13 @@ class WyzeScaleClient:
             return
         if msg.cmd == CMD_HISTORY_WEIGHT_DATA:
             self._history_queue.put_nowait(protocol.parse_history_record(msg))
+            return
+        if msg.cmd == CMD_HEART_RESULT:
+            if self._on_heart_result is not None:
+                try:
+                    self._on_heart_result(protocol.parse_heart_result(msg))
+                except ProtocolError as err:
+                    _LOGGER.debug("Bad heart result message: %s", err)
             return
         if msg.cmd == CMD_USER_LIST_NEW:
             self._user_list_queue.put_nowait(msg)
@@ -226,6 +240,25 @@ class WyzeScaleClient:
     # ------------------------------------------------------------------
     # Commands
     # ------------------------------------------------------------------
+
+    async def send_raw(self, cmd: int, args: bytes = b"") -> None:
+        """Send an arbitrary command without waiting for a reply.
+
+        For protocol exploration; replies (if any) arrive via on_message.
+        """
+        await self._send(protocol.build_request(cmd, args))
+
+    async def enter_heart_mode(self) -> None:
+        """Put the scale into heart-rate measurement mode (fire-and-forget).
+
+        HEART_RESULT frames arrive via the on_heart_result callback. The
+        official app re-sends this periodically while measuring.
+        """
+        await self._send(protocol.build_heart_mode())
+
+    async def enter_weight_mode(self) -> None:
+        """Return the scale to normal weighing mode."""
+        await self._send(protocol.build_weight_mode())
 
     async def sync_time(self, timestamp: int) -> None:
         await self._send_expect_ack(protocol.build_sync_time(timestamp), protocol.CMD_SYNC_TIME)
@@ -279,7 +312,7 @@ class WyzeScaleClient:
 
         Acknowledging a record DELETES it from the scale. Each record is
         handed to ``on_record`` before its ack is sent, so even if the
-        connection drops mid-drain no acknowledged record is lost — callers
+        connection drops mid-drain no acknowledged record is lost - callers
         must persist records from the callback, not just the return value.
         """
         while not self._history_queue.empty():

@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Add Wyze Scale",
-        "description": "Select a discovered scale. The scale only advertises while in use — step on it to wake it if none are listed.",
+        "description": "Select a discovered scale. The scale only advertises while in use - step on it to wake it if none are listed.",
         "data": {
           "address": "Device"
         }
@@ -17,7 +17,7 @@
     "abort": {
       "already_configured": "This scale is already configured",
       "already_in_progress": "Configuration flow is already in progress",
-      "no_devices_found": "No Wyze scales found. The scale only advertises while in use — step on it and try again."
+      "no_devices_found": "No Wyze scales found. The scale only advertises while in use - step on it and try again."
     }
   },
   "options": {

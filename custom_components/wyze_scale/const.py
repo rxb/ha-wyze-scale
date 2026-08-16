@@ -42,6 +42,6 @@ LIVE_FIRST_GRACE = 5.0
 LIVE_MAX_WAIT = 90.0
 
 # Fired once per synced measurement (live and history) with the full
-# scaled reading — the durable record of every weigh-in, since history
+# scaled reading - the durable record of every weigh-in, since history
 # records are deleted from the scale once acknowledged.
 EVENT_MEASUREMENT = f"{DOMAIN}_measurement"

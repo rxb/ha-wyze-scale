@@ -1,7 +1,7 @@
 """Minimal XXTEA (Corrected Block TEA) operating on independent 8-byte blocks.
 
 The Wyze scale applies XXTEA per 8-byte block (two little-endian uint32
-words, n=2, 32 mixing rounds) with a 16-byte key — effectively ECB with a
+words, n=2, 32 mixing rounds) with a 16-byte key - effectively ECB with a
 fixed block size. See PROTOCOL.md §3.3.
 """
 

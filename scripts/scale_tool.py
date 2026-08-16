@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Standalone tester for the Wyze Scale X — no Home Assistant required.
+"""Standalone tester for the Wyze Scale X - no Home Assistant required.
 
 Usage:
   # Watch for advertisements (tests the "scale only beacons when active"
-  # hypothesis — step on/off the scale and watch the timestamps):
+  # hypothesis - step on/off the scale and watch the timestamps):
   python3 scale_tool.py scan [--adapter hci2] [--duration 120]
 
   # Full sync session: connect, handshake, sync time, list users, drain
@@ -105,7 +105,7 @@ async def cmd_scan(args: argparse.Namespace) -> None:
     async with scanner:
         await asyncio.sleep(args.duration)
     if not seen:
-        print("No scale advertisements seen — the scale was likely asleep the whole time.")
+        print("No scale advertisements seen - the scale was likely asleep the whole time.")
     else:
         for addr, count in seen.items():
             print(f"{addr}: {count} advertisements")
@@ -129,8 +129,16 @@ def _print_measurement(m: Measurement, kind: str) -> None:
 async def _connect_session(
     args: argparse.Namespace,
     on_live=None,
+    attempts: int = 3,
 ) -> WyzeScaleClient:
-    """Find the scale, connect, handshake, and sync its clock."""
+    """Find the scale, connect, handshake, and sync its clock.
+
+    Retries the connect/handshake/sync a few times: the scale can be
+    half-awake right after it starts advertising and drop the first
+    command (a marginal BLE adapter makes this worse).
+    """
+    from wyze_ble import WyzeScaleError
+
     print(f"Looking for scale on {args.adapter} (waiting up to {args.wait}s)...")
     if args.address:
         device = await BleakScanner.find_device_by_address(
@@ -143,15 +151,28 @@ async def _connect_session(
     if device is None:
         print("Scale not found. Step on it to wake it, then re-run.")
         sys.exit(1)
-    print(f"Found {device.name} @ {device.address}; connecting...")
-    client = WyzeScaleClient(on_live_weight=on_live)
-    await client.connect(device)
-    print("Connected; handshake OK")
-    # Scale clock = local wall time as epoch seconds
-    local_epoch = int(datetime.now().replace(tzinfo=timezone.utc).timestamp())
-    await client.sync_time(local_epoch)
-    print("SYNC_TIME ok")
-    return client
+    print(f"Found {device.name} @ {device.address}")
+
+    for attempt in range(1, attempts + 1):
+        client = WyzeScaleClient(on_live_weight=on_live)
+        try:
+            print(f"Connecting (attempt {attempt}/{attempts})...")
+            await client.connect(device)
+            print("Connected; handshake OK")
+            # Scale clock = local wall time as epoch seconds
+            local_epoch = int(
+                datetime.now().replace(tzinfo=timezone.utc).timestamp()
+            )
+            await client.sync_time(local_epoch)
+            print("SYNC_TIME ok")
+            return client
+        except (WyzeScaleError, Exception) as err:  # noqa: BLE001
+            await client.disconnect()
+            print(f"  connect attempt {attempt} failed: {err}")
+            if attempt == attempts:
+                print("Giving up. Make sure you're standing on the scale, then retry.")
+                sys.exit(1)
+            await asyncio.sleep(2)
 
 
 def _print_users(users: list[UserRecord]) -> None:
@@ -197,6 +218,110 @@ async def cmd_sync(args: argparse.Namespace) -> None:
     finally:
         await client.disconnect()
         print("Disconnected")
+
+
+async def cmd_watch(args: argparse.Namespace) -> None:
+    """Protocol exploration: send optional commands, then dump all traffic.
+
+    Every decrypted message from the scale is printed with its full hex,
+    including unknown command IDs. Intended for reverse engineering, e.g.
+    the heart rate commands (HEART_MODE 0x10, HEART_RESULT 0x11,
+    WEIGHT_MODE 0x12).
+    """
+    from wyze_ble import protocol
+
+    def on_message(msg) -> None:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"{ts} <- cmd=0x{msg.cmd:02x} status={msg.status} "
+              f"len={len(msg.raw)} hex={msg.raw.hex()}")
+        if msg.cmd == protocol.CMD_CUR_WEIGHT_DATA:
+            try:
+                _print_measurement(protocol.parse_live_weight(msg), "LIVE")
+            except protocol.ProtocolError:
+                pass
+
+    client = await _connect_session(args)
+    client._on_message = on_message  # noqa: SLF001 - exploration tool
+    try:
+        if args.select_first:
+            users = await client.get_users()
+            _print_users(users)
+            if users:
+                await client.select_user(users[0])
+                print(f"Selected user {users[0].user_id_hex[:8]}...")
+        for spec in args.send or []:
+            cmd_str, _, arg_str = spec.partition(":")
+            cmd_id = int(cmd_str, 16)
+            cmd_args = bytes.fromhex(arg_str) if arg_str else b""
+            print(f"-> cmd=0x{cmd_id:02x} args={cmd_args.hex() or '(none)'}")
+            await client.send_raw(cmd_id, cmd_args)
+            await asyncio.sleep(1.5)
+        print(f"Watching for {args.duration}s; use the scale now...")
+        start = time.monotonic()
+        while time.monotonic() - start < args.duration and client.is_connected:
+            await asyncio.sleep(0.5)
+    finally:
+        await client.disconnect()
+        print("Disconnected")
+
+
+async def cmd_heartrate(args: argparse.Namespace) -> None:
+    """Measure heart rate, replicating the official app's BLE flow.
+
+    Sends HEART_MODE (0x10, no args), keeps it alive while measuring, and
+    prints HEART_RESULT (0x11) frames. Stand on the scale barefoot and
+    hold still. Restores normal weighing mode (WEIGHT_MODE 0x12) on exit.
+    """
+    done = asyncio.Event()
+    result = {"bpm": None}
+
+    def on_heart(hr) -> None:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"{ts} HEART on_scale={hr.on_scale} state={hr.measure_state} "
+              f"bpm={hr.bpm}")
+        if hr.is_complete:
+            result["bpm"] = hr.heart_rate
+            done.set()
+
+    def on_message(msg) -> None:
+        if msg.cmd == 0x10:
+            print(f"   HEART_MODE ack: status={msg.status}")
+
+    from wyze_ble import WyzeScaleError
+
+    client = await _connect_session(args)
+    client._on_heart_result = on_heart  # noqa: SLF001 - exploration tool
+    client._on_message = on_message  # noqa: SLF001
+    try:
+        # Enter heart mode IMMEDIATELY: the scale sleeps within a few
+        # seconds of thinking you're done, so don't spend the awake window
+        # on other commands. Stay on the scale the whole time.
+        print("Entering heart-rate mode NOW; stay on the scale barefoot and hold still...")
+        start = time.monotonic()
+        while not done.is_set() and time.monotonic() - start < args.duration:
+            if not client.is_connected:
+                print("Scale disconnected (it sleeps when it thinks you've "
+                      "stepped off). Stay on it and keep still next time.")
+                break
+            try:
+                await client.enter_heart_mode()  # app re-sends periodically
+            except WyzeScaleError as err:
+                print(f"Lost the scale mid-measurement: {err}")
+                break
+            await asyncio.sleep(1.5)
+        if result["bpm"]:
+            print(f"\n*** Heart rate: {result['bpm']} bpm ***")
+        elif not done.is_set():
+            print("\nNo completed heart-rate result (timed out or disconnected).")
+    finally:
+        try:
+            if client.is_connected:
+                await client.enter_weight_mode()
+        except WyzeScaleError:
+            pass
+        finally:
+            await client.disconnect()
+            print("Disconnected")
 
 
 async def cmd_add_user(args: argparse.Namespace) -> None:
@@ -288,12 +413,43 @@ def main() -> None:
     _add_connect_args(del_user)
     del_user.add_argument("--user-id", required=True, help="32 hex characters")
 
+    heartrate = sub.add_parser(
+        "heartrate", help="measure heart rate (BLE flow from the official app)"
+    )
+    _add_connect_args(heartrate)
+    heartrate.add_argument(
+        "--select-first",
+        action="store_true",
+        help="select the first stored user before measuring",
+    )
+    heartrate.add_argument("--duration", type=int, default=90, help="max wait")
+
+    watch = sub.add_parser(
+        "watch", help="protocol exploration: send raw commands, dump all traffic"
+    )
+    _add_connect_args(watch)
+    watch.add_argument(
+        "--send",
+        action="append",
+        metavar="CMD[:HEXARGS]",
+        help="send a raw command after connecting, e.g. --send 10:01 "
+        "(repeatable, sent in order)",
+    )
+    watch.add_argument(
+        "--select-first",
+        action="store_true",
+        help="select the first stored user before sending/watching",
+    )
+    watch.add_argument("--duration", type=int, default=180, help="watch time")
+
     args = parser.parse_args()
     handler = {
         "scan": cmd_scan,
         "sync": cmd_sync,
         "add-user": cmd_add_user,
         "del-user": cmd_del_user,
+        "watch": cmd_watch,
+        "heartrate": cmd_heartrate,
     }[args.command]
     asyncio.run(handler(args))
 

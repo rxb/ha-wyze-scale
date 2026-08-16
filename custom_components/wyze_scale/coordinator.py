@@ -1,10 +1,11 @@
 """Coordinator for the Wyze Scale integration.
 
-Battery-friendly design: the integration never keeps a connection open and
-never polls on a schedule. It listens passively for the scale's BLE
-advertisements (the scale only powers its radio when in use) and connects
-briefly to sync time, read the user list, and drain cached history records
-— then disconnects. A manual "Poll now" button forces a session.
+Battery-friendly design: the integration never keeps a connection open.
+It listens passively for the scale's BLE advertisements (the scale only
+powers its radio when in use) and connects briefly to sync time, read the
+user list, and drain cached history records - then disconnects. A periodic
+fallback sync (skipped silently while the scale is asleep) catches missed
+wake-ups, and a manual "Poll now" button forces a session.
 
 Because acknowledging a history record deletes it from the scale, all data
 is persisted to HA storage as soon as a session ends, and restored on
@@ -266,7 +267,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
 
         HA's bluetooth manager already deduplicates advertisements: this
         callback fires only when the scale newly appears (including after
-        an absence — i.e. it woke up), or when its advertisement content
+        an absence - i.e. it woke up), or when its advertisement content
         changes. Either is a wake-up/activity signal, so any callback is a
         sync trigger, rate-limited by the configured cooldown to bound how
         often we power up the scale's radio with a connection.
@@ -318,7 +319,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         if ble_device is None:
             if self._manual_poll:
                 raise UpdateFailed(
-                    "Scale is not reachable — it sleeps when idle; step on "
+                    "Scale is not reachable - it sleeps when idle; step on "
                     "it to wake it and try again"
                 )
             # Scheduled fallback / advertisement race: the scale is simply
@@ -410,7 +411,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         )
         if ble_device is None:
             raise HomeAssistantError(
-                "Scale is not reachable — it sleeps when idle; step on it "
+                "Scale is not reachable - it sleeps when idle; step on it "
                 "to wake it and try again"
             )
         client = WyzeScaleClient(on_live_weight=self._handle_live_weight)
@@ -434,7 +435,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
     ) -> str:
         """Create a new user profile on the scale; returns its user_id hex.
 
-        The weight is the person's approximate weight — the scale uses it
+        The weight is the person's approximate weight - the scale uses it
         to match weigh-ins to users, so it should be roughly right.
         """
         record = UserRecord(

@@ -9,7 +9,7 @@ add_user:
       name: Scale address
       description: Bluetooth address of the scale (only needed with multiple scales).
       required: false
-      example: "D0:3F:27:00:00:00"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
     sex:
@@ -42,7 +42,7 @@ add_user:
     weight_kg:
       name: Approximate weight
       description: >-
-        The person's approximate weight in kilograms — the scale uses it to
+        The person's approximate weight in kilograms - the scale uses it to
         match weigh-ins to users.
       required: true
       selector:
@@ -76,7 +76,7 @@ delete_user:
       name: Scale address
       description: Bluetooth address of the scale (only needed with multiple scales).
       required: false
-      example: "D0:3F:27:00:00:00"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
     user_id:
