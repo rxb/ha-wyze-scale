@@ -9,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import WyzeScaleConfigEntry
+from .const import DOMAIN
 from .coordinator import WyzeScaleCoordinator
 from .sensor import scale_device_info
 
@@ -45,5 +46,12 @@ class WyzeScalePollNowButton(CoordinatorEntity[WyzeScaleCoordinator], ButtonEnti
     async def async_press(self) -> None:
         try:
             await self.coordinator.async_poll_now()
+        except HomeAssistantError:
+            # Coordinator failures already carry translated messages.
+            raise
         except Exception as err:
-            raise HomeAssistantError(f"Wyze scale sync failed: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sync_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err

@@ -12,12 +12,28 @@
       "bluetooth_confirm": {
         "title": "Wyze Scale discovered",
         "description": "Set up {name} ({address})?"
+      },
+      "reconfigure": {
+        "title": "Replace Wyze Scale",
+        "description": "Pick the scale this entry should use from now on. Collected measurements are kept. If the new scale isn't listed, step on it to prompt an advertisement.",
+        "data": {
+          "address": "Device"
+        }
       }
     },
     "abort": {
       "already_configured": "This scale is already configured",
       "already_in_progress": "Configuration flow is already in progress",
-      "no_devices_found": "No Wyze scales found. Make sure the scale is powered and in range, then step on it and try again."
+      "no_devices_found": "No Wyze scales found. Make sure the scale is powered and in range, then step on it and try again.",
+      "reconfigure_successful": "Scale updated"
+    }
+  },
+  "exceptions": {
+    "scale_not_reachable": {
+      "message": "The scale is not reachable - it sleeps when idle; step on it to wake it and try again"
+    },
+    "sync_failed": {
+      "message": "Sync with the scale failed: {error}"
     }
   },
   "options": {

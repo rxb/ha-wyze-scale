@@ -280,6 +280,19 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    def _discovered_scales(self, exclude: set[str | None]) -> dict[str, str]:
+        """Currently-visible scales, minus the excluded unique ids."""
+        discovered: dict[str, str] = {}
+        for service_info in bluetooth.async_discovered_service_info(self.hass):
+            if not _is_wyze_scale(service_info):
+                continue
+            if format_mac(service_info.address) in exclude:
+                continue
+            discovered[service_info.address] = (
+                f"{service_info.name or LOCAL_NAME} ({service_info.address})"
+            )
+        return discovered
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -293,21 +306,48 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={CONF_ADDRESS: address},
             )
 
-        configured = self._async_current_ids(include_ignore=True)
-        self._discovered = {}
-        for service_info in bluetooth.async_discovered_service_info(self.hass):
-            if not _is_wyze_scale(service_info):
-                continue
-            if format_mac(service_info.address) in configured:
-                continue
-            self._discovered[service_info.address] = (
-                f"{service_info.name or LOCAL_NAME} ({service_info.address})"
-            )
+        self._discovered = self._discovered_scales(
+            set(self._async_current_ids(include_ignore=True))
+        )
         if not self._discovered:
             return self.async_abort(reason="no_devices_found")
 
         return self.async_show_form(
             step_id="user",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_ADDRESS): vol.In(self._discovered)}
+            ),
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Re-pick which scale this entry points at (hardware replacement).
+
+        Measurement history is keyed by entry_id, so it survives the swap.
+        """
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            address = user_input[CONF_ADDRESS]
+            await self.async_set_unique_id(format_mac(address))
+            if self.unique_id != entry.unique_id:
+                # Only a *different* entry owning this address is a conflict.
+                self._abort_if_unique_id_configured()
+            return self.async_update_reload_and_abort(
+                entry,
+                unique_id=self.unique_id,
+                title=f"Wyze Scale ({address})",
+                data_updates={CONF_ADDRESS: address},
+            )
+
+        exclude = set(self._async_current_ids(include_ignore=True))
+        exclude.discard(entry.unique_id)
+        self._discovered = self._discovered_scales(exclude)
+        if not self._discovered:
+            return self.async_abort(reason="no_devices_found")
+
+        return self.async_show_form(
+            step_id="reconfigure",
             data_schema=vol.Schema(
                 {vol.Required(CONF_ADDRESS): vol.In(self._discovered)}
             ),

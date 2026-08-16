@@ -416,8 +416,8 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         if ble_device is None:
             if self._manual_poll:
                 raise UpdateFailed(
-                    "Scale is not reachable - it sleeps when idle; step on "
-                    "it to wake it and try again"
+                    translation_domain=DOMAIN,
+                    translation_key="scale_not_reachable",
                 )
             # Scheduled fallback / advertisement race: the scale is simply
             # asleep. Not an error worth flapping entities or logs over.
@@ -487,7 +487,11 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         except Exception as err:
             # Anything drained before the failure is already recorded and
             # queued for persistence; only the session status is a failure.
-            raise UpdateFailed(f"Sync with scale failed: {err}") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="sync_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         finally:
             await client.disconnect()
             # Don't clobber a freshly-reloaded coordinator's store: if we're
@@ -571,18 +575,22 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             # save reflects it before the import triggers a reload.
             self._pushed[named.user_id] = list(named.scale_fields())
 
-        self._known_subentries = set(subentries) | {
-            p.user_id for p in plan.to_import
-        }
+        # Imports are NOT marked known here: adding a subentry starts the
+        # entry reload eagerly, so a coordinator can load while later
+        # imports in _apply_pending_imports aren't subentries yet - and a
+        # pre-marked import would look like a user deleted while unloaded,
+        # get tombstoned, and be wrongly deleted from the scale.
+        self._known_subentries = set(subentries)
 
     def _apply_pending_imports(self) -> None:
         """Create HA subentries for users discovered on the scale.
 
-        Called after the session's store save. Each async_add_subentry fires
-        the entry update listener, which reloads the entry (serialized on its
-        setup_lock) and creates the new subentry's entities on a task, after
-        this sync. The store is already saved, so the reloaded coordinator
-        reads current data.
+        Called after the session's store save, so a reloaded coordinator
+        reads current data. Each async_add_subentry fires the entry update
+        listener, and with eager task execution the resulting reload can
+        start (and a new coordinator can load) before the NEXT iteration
+        of this loop - which is why imports only become "known" here, one
+        by one, once their subentry actually exists.
         """
         for profile in self._pending_imports:
             subentry = ConfigSubentry(
@@ -600,6 +608,7 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                     "Could not import scale user %s: %s", profile.user_id[:8], err
                 )
                 continue
+            self._known_subentries.add(profile.user_id)
             _LOGGER.info("Imported scale user %s as a device", profile.user_id[:8])
         self._pending_imports = []
 

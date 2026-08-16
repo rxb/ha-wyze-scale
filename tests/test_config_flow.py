@@ -145,6 +145,90 @@ async def test_options_flow(hass: HomeAssistant, mock_entry: MockConfigEntry) ->
     }
 
 
+NEW_ADDRESS = "11:22:33:44:55:66"
+
+
+async def test_reconfigure_flow_moves_entry_to_new_scale(
+    hass: HomeAssistant, mock_entry: MockConfigEntry
+) -> None:
+    """Reconfigure re-points the entry (and its unique id) at a new scale."""
+    mock_entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[make_service_info(address=NEW_ADDRESS)],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": mock_entry.entry_id,
+            },
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_ADDRESS: NEW_ADDRESS}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert mock_entry.data[CONF_ADDRESS] == NEW_ADDRESS
+    assert mock_entry.unique_id == NEW_ADDRESS.lower()
+    assert mock_entry.title == f"Wyze Scale ({NEW_ADDRESS})"
+
+
+async def test_reconfigure_flow_keeps_current_scale(
+    hass: HomeAssistant, mock_entry: MockConfigEntry
+) -> None:
+    """Re-selecting the entry's own scale is allowed and changes nothing."""
+    mock_entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[make_service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": mock_entry.entry_id,
+            },
+        )
+    assert result["type"] is FlowResultType.FORM
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_ADDRESS: SCALE_ADDRESS}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert mock_entry.data[CONF_ADDRESS] == SCALE_ADDRESS
+    assert mock_entry.unique_id == SCALE_UNIQUE_ID
+
+
+async def test_reconfigure_flow_excludes_other_configured_scales(
+    hass: HomeAssistant, mock_entry: MockConfigEntry
+) -> None:
+    """A scale owned by another entry isn't offered as a replacement."""
+    mock_entry.add_to_hass(hass)
+    MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ADDRESS: NEW_ADDRESS},
+        unique_id=NEW_ADDRESS.lower(),
+    ).add_to_hass(hass)
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[make_service_info(address=NEW_ADDRESS)],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_RECONFIGURE,
+                "entry_id": mock_entry.entry_id,
+            },
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_devices_found"
+
+
 NEW_USER_INPUT: dict[str, Any] = {
     "name": "Alice",
     "sex": "female",
