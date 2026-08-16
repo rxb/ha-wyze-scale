@@ -159,11 +159,8 @@ async def _connect_session(
             print(f"Connecting (attempt {attempt}/{attempts})...")
             await client.connect(device)
             print("Connected; handshake OK")
-            # Scale clock = local wall time as epoch seconds
-            local_epoch = int(
-                datetime.now().replace(tzinfo=timezone.utc).timestamp()
-            )
-            await client.sync_time(local_epoch)
+            # Scale clock = standard Unix time (UTC), like the Wyze app.
+            await client.sync_time(int(datetime.now(timezone.utc).timestamp()))
             print("SYNC_TIME ok")
             return client
         except (WyzeScaleError, Exception) as err:  # noqa: BLE001

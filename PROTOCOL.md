@@ -282,9 +282,12 @@ Used by several commands. Layout:
 Sets the scale's clock. The reference client always sends this as the first
 command after the key exchange.
 
-- **Arguments (5 bytes):** uint32 LE Unix timestamp (seconds, local-epoch as
-  plain UTC seconds), followed by one byte `0x01` (purpose unknown; always
-  send `0x01`).
+- **Arguments (5 bytes):** uint32 LE **standard Unix timestamp (UTC
+  seconds)**, followed by one byte `0x01` (purpose unknown; always send
+  `0x01`). The official app sends `System.currentTimeMillis() / 1000` with
+  no timezone offset, so this is plain UTC epoch time (an earlier revision
+  of this document incorrectly described it as local wall time). History
+  record timestamps (§5.8) are likewise plain UTC epoch seconds.
 - Length field: `0x0007`.
 - **Reply:** 7-byte acknowledgement, status 0 = success.
 

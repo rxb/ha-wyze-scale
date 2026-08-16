@@ -92,16 +92,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _utc_to_device_epoch(now_utc: datetime) -> int:
-    """The scale's clock is local wall time encoded as epoch seconds."""
-    local = dt_util.as_local(now_utc)
-    return int(local.replace(tzinfo=timezone.utc).timestamp())
+    """The scale's clock is standard Unix time (UTC), like the Wyze app.
+
+    The app sends System.currentTimeMillis()/1000 with no timezone offset,
+    so SYNC_TIME is just the real UTC epoch.
+    """
+    return int(now_utc.timestamp())
 
 
 def _device_epoch_to_utc(ts: int) -> datetime:
-    """Inverse of _utc_to_device_epoch for history record timestamps."""
-    naive = datetime.fromtimestamp(ts, timezone.utc).replace(tzinfo=None)
-    local_tz = dt_util.now().tzinfo
-    return dt_util.as_utc(naive.replace(tzinfo=local_tz))
+    """History record timestamps are standard Unix time (UTC)."""
+    return datetime.fromtimestamp(ts, timezone.utc)
 
 
 @dataclass

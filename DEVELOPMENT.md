@@ -109,9 +109,12 @@ dynamic add-listener.
 
 ### Timestamps
 
-The scale's clock is local wall time encoded as epoch seconds.
-`_utc_to_device_epoch` / `_device_epoch_to_utc` in `coordinator.py` convert
-in both directions (SYNC_TIME out, history timestamps in).
+The scale's clock is standard Unix time (UTC), like the Wyze app (which
+sends `System.currentTimeMillis()/1000`). `_utc_to_device_epoch` /
+`_device_epoch_to_utc` in `coordinator.py` are plain UTC epoch conversions
+(SYNC_TIME out, history timestamps in) with no timezone shifting - doing a
+local-time conversion here caused last-weigh-in times to read hours in the
+future.
 
 ### Field scaling
 
