@@ -1,47 +1,6 @@
 # Wyze Scale for Home Assistant
 
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![GitHub Release](https://img.shields.io/github/v/release/Bo-Louvier/ha-wyze-scale)](https://github.com/Bo-Louvier/ha-wyze-scale/releases)
-
-> **Disclaimer:** This is a third-party integration, unaffiliated with Wyze
-> Labs, Inc. and created without their knowledge or approval. "Wyze" and any
-> Wyze logos or product images are used purely for descriptive and
-> identification purposes and do not imply any affiliation with, or
-> authorization, sponsorship, or endorsement by, Wyze.
-
-A custom Home Assistant integration for the **Wyze Scale X** smart scale via
-Bluetooth Low Energy.
-
-Fully local - no cloud, no Wyze account, and no Wyze app required. Weigh-ins
-land in Home Assistant automatically, including measurements taken while
-Home Assistant wasn't listening (the scale stores them and they're collected
-on the next sync).
-
----
-
-## Features
-
-- **Automatic weigh-in collection** - the integration connects shortly after
-  a weigh-in and pulls the new measurement
-- **Offline catch-up** - measurements taken while HA was off or out of range
-  are stored on the scale and synced later, with their original timestamps
-- **A device per person** - every user profile on the scale appears as its
-  own sub-device, so each person can rename theirs and link it to their
-  Home Assistant person
-- **Full body composition** - weight, BMI, body fat, muscle mass, bone mass,
-  body water, protein, lean body mass, visceral fat, BMR, and metabolic age
-- **Battery friendly** - never holds a connection open and never polls on a
-  fixed schedule; it connects when the scale appears over Bluetooth, plus an
-  occasional catch-up check (default every 6 hours, configurable)
-- **User management from HA** - create and delete scale user profiles with
-  actions, no Wyze app needed
-- **Auto-discovery** - HA detects the scale over Bluetooth automatically
-- **Survives restarts** - all readings are stored in HA, so nothing goes
-  unavailable between weigh-ins
-
----
-
-## Experimental Scale Ultra support
+## THIS FORK: Experimental Scale Ultra support
 
 The Ultra advertises as `WL_SCU`. It uses a separate session path from
 the Scale X (`WL_SC3`); Scale X history, composition and profile management
@@ -93,6 +52,53 @@ temporarily applies the tested Ultra parameters, and restores the originals
 when disconnecting or cleaning up. It only changes the targeted device entry.
 The workaround is intentionally limited to the parameter sequence observed
 on the tested Pi; broader hardware validation is still needed.
+
+---
+
+## Original upstream project
+
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
+[![GitHub Release](https://img.shields.io/github/v/release/Bo-Louvier/ha-wyze-scale)](https://github.com/Bo-Louvier/ha-wyze-scale/releases)
+
+> **Disclaimer:** This is a third-party integration, unaffiliated with Wyze
+> Labs, Inc. and created without their knowledge or approval. "Wyze" and any
+> Wyze logos or product images are used purely for descriptive and
+> identification purposes and do not imply any affiliation with, or
+> authorization, sponsorship, or endorsement by, Wyze.
+
+A custom Home Assistant integration for the **Wyze Scale X** smart scale via
+Bluetooth Low Energy.
+
+Fully local - no cloud, no Wyze account, and no Wyze app required. Weigh-ins
+land in Home Assistant automatically, including measurements taken while
+Home Assistant wasn't listening (the scale stores them and they're collected
+on the next sync).
+
+---
+
+## Features
+
+- **Automatic weigh-in collection** - the integration connects shortly after
+  a weigh-in and pulls the new measurement
+- **Offline catch-up** - measurements taken while HA was off or out of range
+  are stored on the scale and synced later, with their original timestamps
+- **A device per person** - every user profile on the scale appears as its
+  own sub-device, so each person can rename theirs and link it to their
+  Home Assistant person
+- **Full body composition** - weight, BMI, body fat, muscle mass, bone mass,
+  body water, protein, lean body mass, visceral fat, BMR, and metabolic age
+- **Battery friendly** - never holds a connection open and never polls on a
+  fixed schedule; it connects when the scale appears over Bluetooth, plus an
+  occasional catch-up check (default every 6 hours, configurable)
+- **User management from HA** - create and delete scale user profiles with
+  actions, no Wyze app needed
+- **Auto-discovery** - HA detects the scale over Bluetooth automatically
+- **Survives restarts** - all readings are stored in HA, so nothing goes
+  unavailable between weigh-ins
+
+---
+
+
 
 ## Devices and entities
 
