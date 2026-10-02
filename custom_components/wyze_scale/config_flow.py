@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import (
@@ -18,7 +17,6 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import format_mac
-from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -29,6 +27,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
     TextSelector,
 )
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 from .const import (
     CONF_ADDRESS,
@@ -40,6 +39,7 @@ from .const import (
     CONF_HEIGHT_CM,
     CONF_HEIGHT_FT,
     CONF_HEIGHT_IN,
+    CONF_MODEL,
     CONF_NAME,
     CONF_SEX,
     CONF_SYNC_COOLDOWN,
@@ -56,6 +56,7 @@ from .const import (
     SEX_FEMALE,
     SEX_MALE,
     SUBENTRY_TYPE_USER,
+    ULTRA_LOCAL_NAME,
     UNIT_OPTION_KG,
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
@@ -235,7 +236,7 @@ class WyzeScaleUserSubentryFlow(ConfigSubentryFlow):
 def _is_wyze_scale(service_info: BluetoothServiceInfoBleak) -> bool:
     return (
         SERVICE_UUID in service_info.service_uuids
-        or service_info.name == LOCAL_NAME
+        or service_info.name in (LOCAL_NAME, ULTRA_LOCAL_NAME)
     )
 
 
@@ -247,6 +248,7 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered: dict[str, str] = {}
+        self._models: dict[str, str] = {}
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
@@ -269,7 +271,7 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(
                 title=f"Wyze Scale ({self._discovery_info.address})",
-                data={CONF_ADDRESS: self._discovery_info.address},
+                data=self._entry_data(self._discovery_info.address, self._discovery_info.name),
             )
         self._set_confirm_only()
         return self.async_show_form(
@@ -280,6 +282,19 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @staticmethod
+    def _entry_data(address: str, model: str | None) -> dict[str, Any]:
+        data = {CONF_ADDRESS: address}
+        if model == ULTRA_LOCAL_NAME:
+            data[CONF_MODEL] = model
+        return data
+
+    def _model_for_address(self, address: str) -> str | None:
+        if address in self._models:
+            return self._models[address]
+        info = bluetooth.async_last_service_info(self.hass, address, connectable=True)
+        return info.name if info is not None else None
+
     def _discovered_scales(self, exclude: set[str | None]) -> dict[str, str]:
         """Currently-visible scales, minus the excluded unique ids."""
         discovered: dict[str, str] = {}
@@ -288,6 +303,7 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 continue
             if format_mac(service_info.address) in exclude:
                 continue
+            self._models[service_info.address] = service_info.name
             discovered[service_info.address] = (
                 f"{service_info.name or LOCAL_NAME} ({service_info.address})"
             )
@@ -303,7 +319,7 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=f"Wyze Scale ({address})",
-                data={CONF_ADDRESS: address},
+                data=self._entry_data(address, self._model_for_address(address)),
             )
 
         self._discovered = self._discovered_scales(
@@ -337,7 +353,7 @@ class WyzeScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry,
                 unique_id=self.unique_id,
                 title=f"Wyze Scale ({address})",
-                data_updates={CONF_ADDRESS: address},
+                data_updates={CONF_ADDRESS: address, CONF_MODEL: self._model_for_address(address)},
             )
 
         exclude = set(self._async_current_ids(include_ignore=True))

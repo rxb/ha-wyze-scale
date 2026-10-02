@@ -41,6 +41,59 @@ on the next sync).
 
 ---
 
+## Experimental Scale Ultra support
+
+The Ultra advertises as `WL_SCU`. It uses a separate session path from
+the Scale X (`WL_SC3`); Scale X history, composition and profile management
+keep their existing behavior.
+
+**Tested setup:** Home Assistant on a Raspberry Pi 4, using its local Linux
+Bluetooth adapter. Ultra support currently needs access to Linux HCI monitor
+and management sockets. ESPHome proxies, remote Bluetooth adapters, other
+operating systems and other Ultra firmware versions have not been validated.
+The integration reports an error if the required local socket access is absent;
+it does not grant itself extra permissions.
+
+### Set up Ultra users
+
+1. Set up the scale and its profiles using the Wyze app.
+2. Add the discovered Ultra in Home Assistant.
+3. Use **Add user** on its device page to create one Home Assistant profile
+   per person, with a realistic approximate weight. These profiles are local
+   to Home Assistant; Ultra profile changes are not written to the scale.
+4. Close the Wyze app and Bluetooth scanner apps, then complete a weigh-in
+   near the Home Assistant adapter. The integration detects the faster
+   advertisement burst and attempts to connect automatically.
+
+Ultra live messages can contain the primary user's ID, or an empty ID, even
+when the screen identifies someone else. Home Assistant therefore assigns a
+completed reading only when **exactly one** configured person's reference
+weight is within **10 lb (4.54 kg)**. Each accepted weight becomes that person's
+new reference and is saved across restarts. Before their first accepted
+measurement, the configured approximate weight is used. If nobody matches,
+or multiple people match, the reading is skipped. Guests close to a configured
+person's weight can consequently be assigned to that person.
+
+### What works, and what remains experimental
+
+- Live weight collection, including completed readings with empty user IDs.
+- Separate readings for multiple people and persistent adaptive references.
+- Weigh-ins with socks; barefoot measurements are not required.
+- A single fresh-connection retry when the time-sync reply is missed.
+
+Body composition, offline history retrieval, scale-side user creation/editing/
+deletion and display-unit writes are **not implemented for Ultra**. Composition
+entities remain empty. Measurement time is the time Home Assistant received
+the reading. The periodic fallback connects for live readings; it does not
+retrieve stored Ultra history. The default 120-second cooldown can skip
+weigh-ins taken close together.
+
+The Linux workaround observes the target scale's original timing parameters,
+temporarily applies the tested Ultra parameters, and restores the originals
+when disconnecting or cleaning up. It only changes the targeted device entry.
+The workaround is intentionally limited to the parameter sequence observed
+on the tested Pi; broader hardware validation is still needed.
+
 ## Devices and entities
 
 ### Wyze Scale (main device)
@@ -88,6 +141,10 @@ scale couldn't measure impedance (e.g. weighing with socks on).
 ---
 
 ## Managing scale users
+
+The scale-side management described below applies to **Scale X**. For Ultra,
+Home Assistant profiles are local matching profiles; manage the scale itself
+through the Wyze app.
 
 Scale users are managed entirely from the UI, per scale. On the scale's
 device page (**Settings → Devices & Services → Wyze Scale → the scale**):

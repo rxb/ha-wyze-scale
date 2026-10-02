@@ -6,20 +6,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from homeassistant.components import bluetooth
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.components import bluetooth
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfMass,
 )
-from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -221,7 +221,7 @@ def scale_device_info(coordinator: WyzeScaleCoordinator) -> DeviceInfo:
         identifiers={(DOMAIN, coordinator.address)},
         connections={(CONNECTION_BLUETOOTH, coordinator.address)},
         manufacturer="Wyze",
-        model="Scale X",
+        model="Scale Ultra" if coordinator.is_ultra else "Scale X",
         name="Wyze Scale",
     )
 
@@ -367,7 +367,7 @@ class WyzeScaleUserSensor(WyzeScaleBaseEntity, SensorEntity):
             identifiers={(DOMAIN, f"{coordinator.address}-{self._user_id}")},
             via_device=(DOMAIN, coordinator.address),
             manufacturer="Wyze",
-            model="Scale X user",
+            model="Scale Ultra user" if coordinator.is_ultra else "Scale X user",
             name=subentry.title,
         )
 

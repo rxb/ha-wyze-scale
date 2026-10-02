@@ -467,3 +467,22 @@ A typical session:
   and for detecting the end of multi-message streams (user list, history).
 - The 32-bit Diffie-Hellman exchange provides negligible real security
   (trivially brute-forceable); it is obfuscation, not protection.
+
+
+## Experimental WL_SCU (Scale Ultra) differences
+
+Observed on one Ultra; these findings do not establish compatibility with
+every firmware version.
+
+- FD7B / 0001 advertises Write Without Response and Indicate. Writes must use
+  the Ultra client's no-response mode.
+- The encrypted request body uses a four-byte inner header:
+  `[0x20 | counter, 0x01, body_length, sum(body) & 0xff]`, followed by
+  the command, flag and arguments. The outer encryption frame is retained.
+- The observed 0x18 reply carries a count followed by 48-byte profile records.
+- Live 0x08 readings use kg × 100. Completed readings were observed with
+  states 2, 3 and 4; unfinished states are not published.
+- The live profile identifier is unsuitable for person assignment: primary
+  and all-zero identifiers occurred even when the display named another user.
+  Weight matching is explicitly an inference in Home Assistant.
+- Composition fields and history commands remain unvalidated.

@@ -20,9 +20,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
-
 from types import MappingProxyType
+from typing import Any
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
@@ -36,6 +35,7 @@ from .const import (
     CONF_ADVERTISEMENT_TRIGGER,
     CONF_DISPLAY_UNIT,
     CONF_FALLBACK_INTERVAL,
+    CONF_MODEL,
     CONF_SYNC_COOLDOWN,
     DEFAULT_ADVERTISEMENT_TRIGGER,
     DEFAULT_FALLBACK_INTERVAL,
@@ -47,6 +47,7 @@ from .const import (
     LIVE_MAX_WAIT,
     STORAGE_VERSION,
     SUBENTRY_TYPE_USER,
+    ULTRA_LOCAL_NAME,
     UNIT_OPTION_KG,
     UNIT_OPTION_LB,
     UNIT_OPTION_NONE,
@@ -59,6 +60,9 @@ from .wyze_ble import (
     WyzeScaleError,
 )
 from .wyze_ble.protocol import MEASURE_STATE_FINAL, UNIT_KG, UNIT_LB
+from .wyze_ble.ultra import UltraReadOnlyClient, match_measurement, validate_profile_ids
+from .wyze_ble.ultra_timing import UltraTimingSession
+from .wyze_ble.ultra_wakeup import UltraWakeupMonitor
 
 
 def _profile_from_record(record: UserRecord) -> UserProfile:
@@ -255,6 +259,8 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         self._last_live: float | None = None
         self._cancel_bluetooth: Callable[[], None] | None = None
         self._manual_poll = False
+        self._ultra_wakeup = None
+        self._ultra_reference_weights: dict[str, float] = {}
         # User-management reconciliation state (persisted).
         self._tombstones: set[str] = set()  # user_ids deleted in HA
         self._pushed: dict[str, list[int]] = {}  # user_id -> scale_fields
@@ -266,6 +272,16 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
     @property
     def address(self) -> str:
         return self._address
+
+    @property
+    def is_ultra(self) -> bool:
+        """Detect Ultra by its advertised model, including pre-existing entries."""
+        if self.config_entry.data.get(CONF_MODEL) == ULTRA_LOCAL_NAME:
+            return True
+        info = bluetooth.async_last_service_info(
+            self.hass, self._address, connectable=True
+        )
+        return info is not None and info.name == ULTRA_LOCAL_NAME
 
     def _subentry_profiles(self) -> dict[str, tuple[str, UserProfile]]:
         """Desired users from config subentries: user_id -> (subentry_id, profile)."""
@@ -294,6 +310,11 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
                 for uid, fields in stored.get("pushed_profiles", {}).items()
             }
             self._known_subentries = set(stored.get("known_subentries", []))
+            self._ultra_reference_weights = {
+                uid: float(weight)
+                for uid, weight in stored.get("ultra_reference_weights", {}).items()
+                if isinstance(weight, (int, float)) and 0 < weight < 500
+            }
         self.async_set_updated_data(self._scale_data)
 
         # Detect users deleted in HA while we were unloaded: they were known
@@ -316,9 +337,20 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
 
+        if self.is_ultra:
+            self._ultra_wakeup = UltraWakeupMonitor(
+                self._address, self._async_handle_ultra_activity
+            )
+            try:
+                await self._ultra_wakeup.start()
+            except Exception:
+                _LOGGER.exception("Could not start Ultra activity monitor")
+                await self._ultra_wakeup.close()
+                self._ultra_wakeup = None
+
         # If there's pending user-management work (a delete, an added or
         # edited profile not yet on the scale), sync soon to push it.
-        if self._has_pending_user_work():
+        if not self.is_ultra and self._has_pending_user_work():
             self.hass.async_create_task(self.async_request_refresh())
 
     def _has_pending_user_work(self) -> bool:
@@ -339,12 +371,16 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             "tombstones": sorted(self._tombstones),
             "pushed_profiles": self._pushed,
             "known_subentries": sorted(self._known_subentries),
+            "ultra_reference_weights": dict(self._ultra_reference_weights),
         }
 
     async def _async_save(self) -> None:
         await self._store.async_save(self._data_for_store())
 
     async def async_shutdown(self) -> None:
+        if self._ultra_wakeup is not None:
+            await self._ultra_wakeup.close()
+            self._ultra_wakeup = None
         if self._cancel_bluetooth is not None:
             self._cancel_bluetooth()
             self._cancel_bluetooth = None
@@ -353,6 +389,22 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
     # ------------------------------------------------------------------
     # Triggers
     # ------------------------------------------------------------------
+
+    @callback
+    def _async_handle_ultra_activity(self) -> None:
+        if not self.config_entry.options.get(
+            CONF_ADVERTISEMENT_TRIGGER, DEFAULT_ADVERTISEMENT_TRIGGER
+        ) or self._sync_lock.locked() or self._shutdown_requested:
+            return
+        cooldown = self.config_entry.options.get(
+            CONF_SYNC_COOLDOWN, DEFAULT_SYNC_COOLDOWN
+        )
+        now = time.monotonic()
+        if self._last_sync_attempt and now - self._last_sync_attempt < cooldown:
+            return
+        self._last_sync_attempt = now
+        _LOGGER.info("Ultra fast advertisement burst; starting sync")
+        self.hass.async_create_task(self.async_request_refresh())
 
     @callback
     def _async_handle_advertisement(
@@ -409,6 +461,107 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             self._last_sync_attempt = time.monotonic()
             return await self._async_sync_session()
 
+    async def _async_sync_ultra(self, ble_device) -> ScaleData:
+        """Read live Ultra weights without writing profiles or acknowledging history."""
+        profiles_ready = asyncio.get_running_loop().create_future()
+        pending: list[Measurement] = []
+        known_ids: set[str] = set()
+
+        def publish_ultra(measurement: Measurement) -> None:
+            self._last_live = time.monotonic()
+            if measurement.battery is not None:
+                self._scale_data.battery = measurement.battery
+            if measurement.measure_state not in (2, 3, 4) or not measurement.weight_raw:
+                return
+            if not profiles_ready.done():
+                if len(pending) < 8:
+                    pending.append(measurement)
+                return
+            if profiles_ready.cancelled() or profiles_ready.exception() is not None:
+                return
+            reading = match_measurement(
+                measurement,
+                [profile for _sid, profile in self._subentry_profiles().values()],
+                self._ultra_reference_weights,
+                known_ids,
+            )
+            if reading is None:
+                _LOGGER.debug("Ultra completed weight has no unique user match")
+                return
+            self._handle_live_weight(reading)
+            self._ultra_reference_weights[reading.user_id_hex] = reading.weight_kg
+
+        def receive_ultra(message) -> None:
+            if message.cmd != 0x18 or profiles_ready.done():
+                return
+            try:
+                known_ids.update(validate_profile_ids(message.raw))
+            except ValueError as err:
+                pending.clear()
+                profiles_ready.set_exception(WyzeScaleError(str(err)))
+                return
+            profiles_ready.set_result(True)
+            for reading in pending:
+                publish_ultra(reading)
+            pending.clear()
+
+        client = UltraReadOnlyClient(
+            on_live_weight=publish_ultra, on_message=receive_ultra,
+        )
+        timing = UltraTimingSession(self._address)
+        try:
+            await timing.start()
+            await client.connect(ble_device)
+            timing.check()
+            for attempt in range(2):
+                try:
+                    await client.sync_time(_utc_to_device_epoch(dt_util.utcnow()))
+                    break
+                except WyzeScaleError as err:
+                    if (
+                        attempt != 0
+                        or str(err) != "timeout waiting for reply to 0x01"
+                        or not client.is_connected
+                    ):
+                        raise
+                    timing.check()
+                    _LOGGER.info("Ultra time-sync reply missed; reconnecting once")
+                    await client.disconnect()
+                    await timing.close()
+                    pending.clear()
+                    await asyncio.sleep(0.25)
+                    client = UltraReadOnlyClient(
+                        on_live_weight=publish_ultra, on_message=receive_ultra,
+                    )
+                    timing = UltraTimingSession(self._address)
+                    await timing.start()
+                    await client.connect(ble_device)
+                    timing.check()
+            await client.send_raw(0x18)
+            await asyncio.wait_for(profiles_ready, 3)
+            deadline = time.monotonic() + 60
+            while client.is_connected and time.monotonic() < deadline:
+                timing.check()
+                await asyncio.sleep(1)
+            timing.check()
+            self._scale_data.last_sync = dt_util.utcnow()
+            return self._scale_data
+        except Exception as err:
+            raise UpdateFailed(f"Ultra experimental session failed: {err}") from err
+        finally:
+            try:
+                await client.disconnect()
+            finally:
+                try:
+                    await timing.close()
+                finally:
+                    if profiles_ready.done() and not profiles_ready.cancelled():
+                        profiles_ready.exception()
+                    else:
+                        profiles_ready.cancel()
+                    if not self._shutdown_requested:
+                        await self._async_save()
+
     async def _async_sync_session(self) -> ScaleData:
         ble_device = bluetooth.async_ble_device_from_address(
             self.hass, self._address, connectable=True
@@ -427,6 +580,9 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
         self._last_live = None
         self._deleted_this_session = set()
         self._pending_imports = []
+        if self.is_ultra or ble_device.name == ULTRA_LOCAL_NAME:
+            return await self._async_sync_ultra(ble_device)
+
         client = WyzeScaleClient(on_live_weight=self._handle_live_weight)
         try:
             await client.connect(ble_device)
@@ -635,11 +791,8 @@ class WyzeScaleCoordinator(DataUpdateCoordinator[ScaleData]):
             and (dt_util.utcnow() - user.last.time).total_seconds() < 120
         ):
             return
-        _LOGGER.debug(
-            "Final live measurement: %.2f kg (user %s…)",
-            m.weight_kg,
-            m.user_id_hex[:8],
-        )
+        _LOGGER.debug("Final live measurement recorded")
+
         self._record_measurement(m, source="live")
 
     def _merge_profile(self, record: UserRecord) -> UserData:

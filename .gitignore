@@ -4,3 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .coverage
+
+.venv*/
+.python-runtime/
+.uv-cache/
+local-backup/

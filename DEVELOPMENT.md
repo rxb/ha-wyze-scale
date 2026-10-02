@@ -172,8 +172,7 @@ python3 -m venv .venv && .venv/bin/pip install bleak bleak-retry-connector
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest xxtea pytest-homeassistant-custom-component \
-    bleak bleak-retry-connector
+.venv/bin/pip install -r requirements-test.txt
 .venv/bin/python -m pytest tests/
 ```
 
@@ -222,3 +221,44 @@ were delivered but deliberately left unacked), multi-message user lists, and
 the full subentry user-reconciliation path (create/update/delete on the
 scale, import as subentries). The pure reconcile logic has unit tests
 (`tests/test_users.py`); the BLE and HA-wiring side needs a live instance.
+
+
+## Scale Ultra implementation and validation
+
+Ultra entries retain the advertised model in config. Older entries can be
+identified from current Bluetooth service information. The coordinator routes
+`WL_SCU` to a separate live-weight session; the original Scale X session is
+unchanged. `wyze_ble/ultra.py` owns framing, profile-list validation and pure
+weight assignment. Ultra writes use `response=False`; the Scale X client
+retains `response=True`.
+
+The Ultra command allowlist is time sync (0x01) and profile list (0x18).
+There are no history acknowledgements or profile writes. A valid observed
+single-message profile list is required before accepting buffered completions.
+Nonzero unknown IDs, unfinished frames, out-of-range weights and ambiguous
+matches are rejected. Known IDs do not determine the person; the unique
+reference-weight match does. References are stored separately from historical
+sensor values to avoid seeding from an older misassigned reading.
+
+`ultra_wakeup.py` observes HCI legacy connectable advertisements: four target
+reports within one second trigger activity; a gap over 1.5 seconds rearms it.
+The existing cooldown and sync lock still apply. `ultra_timing.py` temporarily
+loads target-specific connection parameters through Linux management sockets.
+It observes and restores the original (7,9,0,800) tuple; the tested temporary
+tuple is (24,36,2,500). Restoration is attempted even after a lost command ACK.
+All native socket operations require an appropriately configured Linux host.
+
+Hardware validation: one Ultra on a Raspberry Pi 4; automatic live collection
+for two people, socks/weight-only readings, completion states 2/3/4, empty or
+primary profile IDs, and saved adaptive references. The generalized checkout
+must still be tested on hardware before a release. Other adapters, proxies,
+firmware, body composition and offline history are not validated.
+
+`tests/test_ultra.py` uses synthetic profiles and HCI packets, including
+device isolation, restoration, framing, write mode, buffered completion,
+assignment, reference persistence and bounded fresh-connection retries.
+No personal captures are required or distributed.
+
+The recorded test environment used Python 3.14 and Home Assistant 2026.10.0b0
+(the version pinned by the test plugin). These are development dependencies,
+not a new minimum Home Assistant requirement for Scale X.

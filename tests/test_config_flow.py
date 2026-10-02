@@ -310,3 +310,15 @@ async def test_reconfigure_user_subentry(
     assert subentry.title == "Alicia"
     assert subentry.data["user_id"] == user_id
     assert subentry.data["age"] == 31
+
+
+async def test_ultra_bluetooth_discovery_preserves_model(hass: HomeAssistant) -> None:
+    """Any Ultra address selects the Ultra path, without household-specific IDs."""
+    from custom_components.wyze_scale.const import CONF_MODEL, ULTRA_LOCAL_NAME
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=make_service_info(name=ULTRA_LOCAL_NAME),
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["data"] == {CONF_ADDRESS: SCALE_ADDRESS, CONF_MODEL: ULTRA_LOCAL_NAME}

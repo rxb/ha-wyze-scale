@@ -58,7 +58,10 @@ class WyzeScaleClient:
         on_live_weight: Callable[[Measurement], None] | None = None,
         on_message: Callable[[Message], None] | None = None,
         on_heart_result: "Callable[[HeartResult], None] | None" = None,
+        *,
+        write_response: bool = True,
     ) -> None:
+        self._write_response = write_response
         self._client: BleakClient | None = None
         self._key: bytes | None = None
         self._counter = 0
@@ -168,7 +171,7 @@ class WyzeScaleClient:
         if self._client is None:
             raise WyzeScaleError("not connected")
         try:
-            await self._client.write_gatt_char(CHAR_UUID, data, response=True)
+            await self._client.write_gatt_char(CHAR_UUID, data, response=self._write_response)
         except WyzeScaleError:
             raise
         except Exception as err:

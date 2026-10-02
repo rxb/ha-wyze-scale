@@ -7,6 +7,9 @@
     },
     {
       "local_name": "WL_SC3"
+    },
+    {
+      "local_name": "WL_SCU"
     }
   ],
   "codeowners": ["@Bo-Louvier"],

@@ -5,6 +5,8 @@ from __future__ import annotations
 DOMAIN = "wyze_scale"
 
 CONF_ADDRESS = "address"
+CONF_MODEL = "model"
+ULTRA_LOCAL_NAME = "WL_SCU"
 
 # Config subentry type: one per scale user.
 SUBENTRY_TYPE_USER = "user"
